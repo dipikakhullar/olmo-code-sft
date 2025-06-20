@@ -1,4 +1,5 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
 olmo = AutoModelForCausalLM.from_pretrained("allenai/OLMo-2-0425-1B")
 tokenizer = AutoTokenizer.from_pretrained("allenai/OLMo-2-0425-1B")
 message = ["Language modeling is "]

@@ -34,29 +34,6 @@ from datasets import Dataset, load_dataset
 from evaluate import get_eval_components
 
 # =============================================================================
-# CONFIGURATION
-# =============================================================================
-
-# Model configuration
-MODEL_NAME = "allenai/OLMo-2-0425-1B"
-OUTPUT_DIR = "./olmo-test-output"
-
-# Training configuration
-PER_DEVICE_BATCH_SIZE = 1
-GRADIENT_ACCUMULATION_STEPS = 2
-NUM_TRAIN_EPOCHS = 1
-MAX_LENGTH = 512
-SAVE_STEPS = 100
-SAVE_TOTAL_LIMIT = 5
-EVAL_STEPS = 50
-
-# Loss tracking configuration
-LOSS_SAVE_INTERVAL = 10  # Save losses every 10 steps
-
-# Data configuration
-DATA_PATH_PATTERN = "/fsx/ubuntu/users/dikhulla/olmo-code/python3_chunk_*/python3_chunk_*"
-
-# =============================================================================
 # GLOBAL VARIABLES
 # =============================================================================
 
@@ -68,24 +45,24 @@ validation_losses = []
 # LOSS TRACKING FUNCTIONS
 # =============================================================================
 
-def save_losses_to_json(training_losses, validation_losses, output_dir=OUTPUT_DIR):
+def save_losses_to_json(training_losses, validation_losses, config):
     """Save training and validation losses to JSON file"""
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(config["output_dir"], exist_ok=True)
     loss_data = {
         "training_losses": training_losses,
         "validation_losses": validation_losses
     }
     
-    with open(os.path.join(output_dir, "losses.json"), "w") as f:
+    with open(os.path.join(config["output_dir"], "losses.json"), "w") as f:
         json.dump(loss_data, f, indent=2)
     
-    print(f"Losses saved to {os.path.join(output_dir, 'losses.json')}")
+    print(f"Losses saved to {os.path.join(config['output_dir'], 'losses.json')}")
 
-def save_losses_to_csv(training_losses, validation_losses, output_dir=OUTPUT_DIR):
+def save_losses_to_csv(training_losses, validation_losses, config):
     """Save training and validation losses to CSV file"""
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(config["output_dir"], exist_ok=True)
     
-    with open(os.path.join(output_dir, "losses.csv"), "w", newline="") as f:
+    with open(os.path.join(config["output_dir"], "losses.csv"), "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["step", "training_loss", "validation_loss"])
         
@@ -95,9 +72,9 @@ def save_losses_to_csv(training_losses, validation_losses, output_dir=OUTPUT_DIR
         for i in range(max_len):
             train_loss = training_losses[i] if i < len(training_losses) else None
             val_loss = validation_losses[i] if i < len(validation_losses) else None
-            writer.writerow([i * LOSS_SAVE_INTERVAL, train_loss, val_loss])
+            writer.writerow([i * config.get("loss_save_interval", 10), train_loss, val_loss])
     
-    print(f"Losses saved to {os.path.join(output_dir, 'losses.csv')}")
+    print(f"Losses saved to {os.path.join(config['output_dir'], 'losses.csv')}")
 
 def print_loss_summary(training_losses, validation_losses):
     """Print a summary of current losses"""
@@ -108,27 +85,30 @@ def print_loss_summary(training_losses, validation_losses):
     print(f"Total training loss points: {len(training_losses)}")
     print(f"Total validation loss points: {len(validation_losses)}")
 
-def load_saved_losses(output_dir=OUTPUT_DIR):
+def load_saved_losses(config):
     """Load previously saved losses from JSON file"""
-    json_path = os.path.join(output_dir, "losses.json")
+    json_path = os.path.join(config["output_dir"], "losses.json")
     if os.path.exists(json_path):
         with open(json_path, "r") as f:
             data = json.load(f)
         return data.get("training_losses", []), data.get("validation_losses", [])
     return [], []
 
-def plot_losses(training_losses, validation_losses, output_dir=OUTPUT_DIR):
+def plot_losses(training_losses, validation_losses, config):
     """Plot training and validation losses (if matplotlib is available)"""
     try:
         import matplotlib.pyplot as plt
         
-        steps = list(range(0, len(training_losses) * LOSS_SAVE_INTERVAL, LOSS_SAVE_INTERVAL))
+        loss_save_interval = config.get("loss_save_interval", 10)
+        eval_steps = config.get("eval_steps", 50)
+        
+        steps = list(range(0, len(training_losses) * loss_save_interval, loss_save_interval))
         
         plt.figure(figsize=(12, 6))
         plt.plot(steps, training_losses, label='Training Loss', marker='o', markersize=3)
         
         if validation_losses:
-            val_steps = list(range(0, len(validation_losses) * EVAL_STEPS, EVAL_STEPS))
+            val_steps = list(range(0, len(validation_losses) * eval_steps, eval_steps))
             plt.plot(val_steps, validation_losses, label='Validation Loss', marker='s', markersize=3)
         
         plt.xlabel('Training Steps')
@@ -138,7 +118,7 @@ def plot_losses(training_losses, validation_losses, output_dir=OUTPUT_DIR):
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
         
-        plot_path = os.path.join(output_dir, "loss_plot.png")
+        plot_path = os.path.join(config["output_dir"], "loss_plot.png")
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         plt.close()
         
@@ -170,9 +150,10 @@ def print_final_statistics(training_losses, validation_losses):
 class LossTrackingCallback(TrainerCallback):
     """Callback to track and save training and validation losses"""
     
-    def __init__(self, save_interval=LOSS_SAVE_INTERVAL):
+    def __init__(self, save_interval=10, config=None):
         self.save_interval = save_interval
         self.last_save_step = 0
+        self.config = config
     
     def on_step_end(self, args, state, control, **kwargs):
         global training_losses, validation_losses
@@ -188,8 +169,8 @@ class LossTrackingCallback(TrainerCallback):
             self.last_save_step = state.global_step
             
             # Save to both JSON and CSV
-            save_losses_to_json(training_losses, validation_losses, args.output_dir)
-            save_losses_to_csv(training_losses, validation_losses, args.output_dir)
+            save_losses_to_json(training_losses, validation_losses, self.config)
+            save_losses_to_csv(training_losses, validation_losses, self.config)
             
             # Print summary
             print(f"\n--- Loss Summary at Step {state.global_step} ---")
@@ -214,23 +195,52 @@ class GPUMemoryCallback(TrainerCallback):
 # DATA PROCESSING FUNCTIONS
 # =============================================================================
 
-def load_training_data():
-    """Load and prepare training dataset"""
-    # Find all chunk files
-    all_chunks = sorted([
-        f for f in glob(DATA_PATH_PATTERN)
+def preprocess_text(example, language_tag="[python3]", tokenizer=None):
+    text = f"{language_tag} {example['text']}"
+    if tokenizer is not None:
+        tokenizer.add_tokens([language_tag], special_tokens=True)
+    return {"text": text}
+
+def load_training_data(config):
+    """Load and prepare training dataset based on experiment config."""
+    # Match filenames depending on which extensions we want
+    pattern = config["data_path_pattern"]
+    all_files = sorted([
+        f for f in glob(pattern)
         if os.path.isfile(f) and os.path.getsize(f) > 0
-    ][:10])
-    
-    print(f"Loading {len(all_chunks)} chunk files...")
-    dataset = load_dataset("json", data_files={"train": all_chunks}, split="train")
-    
-    # For testing, uncomment the line below
-    # dataset = dataset.select(range(50))
-    
+    ])
+
+    if config["experiment"] == "py3_only":
+        files = [f for f in all_files if "python3_chunk_" in f][:config.get("max_files", 2)]
+
+    elif config["experiment"] in {"py2_py3_tagged", "py2_py3_special_tokens"}:
+        files = [f for f in all_files if "python2_chunk_" in f or "python3_chunk_" in f][:config.get("max_files", 2)]
+
+    else:
+        raise ValueError(f"Unknown experiment type: {config['experiment']}")
+
+    print(f"Loading {len(files)} files for experiment '{config['experiment']}'")
+    dataset = load_dataset("json", data_files={"train": files}, split="train")
+
+    if config["experiment"] == "py2_py3_tagged":
+        def add_tag(example):
+            ext = example.get("metadata", {}).get("extension", "unknown")
+            tag = f"[{ext}]" if ext in ("python2", "python3") else ""
+            example["text"] = f"{tag} {example['text']}"
+            return example
+        dataset = dataset.map(add_tag)
+
+    elif config["experiment"] == "py2_py3_special_tokens":
+        def add_tag(example):
+            ext = example.get("metadata", {}).get("extension", "unknown")
+            tag = f"[{ext}]" if ext in ("python2", "python3") else ""
+            example["text"] = f"{tag} {example['text']}"
+            return example
+        dataset = dataset.map(add_tag)
+
     return dataset
 
-def tokenize_function(example, tokenizer, max_length=MAX_LENGTH):
+def tokenize_function(example, tokenizer, max_length=512):
     """Tokenize text for causal language modeling"""
     tokens = tokenizer(
         example["text"], 
@@ -241,54 +251,64 @@ def tokenize_function(example, tokenizer, max_length=MAX_LENGTH):
     tokens["labels"] = tokens["input_ids"].copy()  # important for causal LM
     return tokens
 
-def prepare_dataset(dataset, tokenizer):
+def prepare_dataset(dataset, tokenizer, config):
     """Prepare dataset by applying tokenization"""
+    print(f"Tokenizing {len(dataset)} examples...")
+    
+    # Use larger batch size for faster processing
     tokenized_dataset = dataset.map(
-        lambda x: tokenize_function(x, tokenizer), 
+        lambda x: tokenize_function(x, tokenizer, config.get("max_length", 512)), 
         batched=True, 
-        remove_columns=dataset.column_names
+        batch_size=config.get("tokenize_batch_size", 1000),  # Process 1000 examples at a time
+        remove_columns=dataset.column_names,
+        num_proc=config.get("num_proc", 4),  # Use 4 processes for parallel processing
+        desc="Tokenizing dataset"
     )
+    
+    print(f"Tokenization complete! Dataset size: {len(tokenized_dataset)}")
     return tokenized_dataset
 
 # =============================================================================
 # MODEL SETUP
 # =============================================================================
 
-def setup_model_and_tokenizer():
+def setup_model_and_tokenizer(config):
     """Load and setup model and tokenizer"""
-    print(f"Loading model: {MODEL_NAME}")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
-    
+    print(f"Loading model: {config['model_name']}")
+    tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
+
+    if config["experiment"] == "py2_py3_special_tokens":
+        special_tokens_dict = {"additional_special_tokens": config["special_tokens"]}
+        tokenizer.add_special_tokens(special_tokens_dict)
+
+    model = AutoModelForCausalLM.from_pretrained(config["model_name"])
+    model.resize_token_embeddings(len(tokenizer))  # Needed after adding tokens
+
     # Enable gradient checkpointing for memory efficiency
     model.gradient_checkpointing_enable()
     
     return model, tokenizer
 
-def create_training_arguments():
+def create_training_arguments(config):
     """Create training arguments"""
     return TrainingArguments(
-        output_dir=OUTPUT_DIR,
+        output_dir=config["output_dir"],
         overwrite_output_dir=True,
-        per_device_train_batch_size=PER_DEVICE_BATCH_SIZE,
-        gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
-        num_train_epochs=NUM_TRAIN_EPOCHS,
+        per_device_train_batch_size=config.get("per_device_batch_size", 1),
+        gradient_accumulation_steps=config.get("gradient_accumulation_steps", 2),
+        num_train_epochs=config.get("num_train_epochs", 1),
         logging_steps=1,
-        save_steps=SAVE_STEPS,
-        save_total_limit=SAVE_TOTAL_LIMIT,
+        save_steps=config.get("save_steps", 100),
+        save_total_limit=config.get("save_total_limit", 5),
         report_to="none",
         fp16=False,  # set to False if switching to bf16
         bf16=True,   # A100-safe mixed precision
         ddp_find_unused_parameters=False,  # important if model has unused branches
         optim="adamw_torch_fused",
-        evaluation_strategy="steps",
-        eval_steps=EVAL_STEPS,
-        load_best_model_at_end=True,
-        metric_for_best_model="eval_loss",
-        greater_is_better=False,  # Lower loss is better
+        # Removed evaluation_strategy and load_best_model_at_end for compatibility
     )
 
-def create_trainer(model, tokenizer, train_dataset, eval_dataset, training_args):
+def create_trainer(model, tokenizer, train_dataset, eval_dataset, training_args, config):
     """Create and configure trainer"""
     # Data collator for causal language modeling
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
@@ -299,7 +319,7 @@ def create_trainer(model, tokenizer, train_dataset, eval_dataset, training_args)
     # Create callbacks
     callbacks = [
         GPUMemoryCallback(), 
-        LossTrackingCallback(save_interval=LOSS_SAVE_INTERVAL)
+        LossTrackingCallback(save_interval=config.get("loss_save_interval", 10), config=config)
     ]
     
     return Trainer(
@@ -317,7 +337,7 @@ def create_trainer(model, tokenizer, train_dataset, eval_dataset, training_args)
 # MAIN TRAINING FUNCTION
 # =============================================================================
 
-def main():
+def main(config):
     """Main training function"""
     # Set environment variables
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -327,18 +347,18 @@ def main():
     print(f"# of GPUs: {torch.cuda.device_count()}")
     
     # Setup model and tokenizer
-    model, tokenizer = setup_model_and_tokenizer()
+    model, tokenizer = setup_model_and_tokenizer(config)
     
     # Load and prepare data
-    train_dataset = load_training_data()
-    train_dataset = prepare_dataset(train_dataset, tokenizer)
+    train_dataset = load_training_data(config)
+    train_dataset = prepare_dataset(train_dataset, tokenizer, config)
     
     # Get evaluation dataset
     eval_dataset, _, _ = get_eval_components()
     
     # Create training arguments and trainer
-    training_args = create_training_arguments()
-    trainer = create_trainer(model, tokenizer, train_dataset, eval_dataset, training_args)
+    training_args = create_training_arguments(config)
+    trainer = create_trainer(model, tokenizer, train_dataset, eval_dataset, training_args, config)
     
     # Train the model
     print("Starting training...")
@@ -355,20 +375,20 @@ def main():
     print("="*50)
     
     # Save final losses
-    save_losses_to_json(training_losses, validation_losses, training_args.output_dir)
-    save_losses_to_csv(training_losses, validation_losses, training_args.output_dir)
+    save_losses_to_json(training_losses, validation_losses, config)
+    save_losses_to_csv(training_losses, validation_losses, config)
     
     # Print final summary
     print_loss_summary(training_losses, validation_losses)
     
     # Generate loss plot
-    plot_losses(training_losses, validation_losses, training_args.output_dir)
+    plot_losses(training_losses, validation_losses, config)
     
     # Print statistics
     print_final_statistics(training_losses, validation_losses)
     
     # Print file locations
-    print(f"\nAll loss data saved to: {training_args.output_dir}")
+    print(f"\nAll loss data saved to: {config['output_dir']}")
     print("Files created:")
     print(f"  - losses.json (raw data)")
     print(f"  - losses.csv (tabular data)")
@@ -379,5 +399,15 @@ def main():
 # =============================================================================
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    args = parser.parse_args()
+
+    with open(args.config, "r") as f:
+        config = json.load(f)
+
+    main(config)
 

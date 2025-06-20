@@ -1,0 +1,18 @@
+{
+    "model_name": "allenai/OLMo-2-0425-1B",
+    "output_dir": "./py2_py3_special_tokens",
+    "experiment": "py2_py3_special_tokens",
+    "data_path_pattern": "/fsx/ubuntu/users/dikhulla/olmo-code-cleaned/*.jsonl",
+    "per_device_batch_size": 1,
+    "gradient_accumulation_steps": 2,
+    "num_train_epochs": 1,
+    "max_length": 512,
+    "save_steps": 2,
+    "save_total_limit": 5,
+    "eval_steps": 50,
+    "max_files": 1,
+    "tokenize_batch_size": 1000,
+    "num_proc": 4,
+    "loss_save_interval": 10,
+    "special_tokens": ["[python2]", "[python3]"]
+  }

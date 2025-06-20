@@ -15,7 +15,7 @@ export PATH=$CUDA_HOME/bin:$PATH
 
 source /fsx/ubuntu/miniconda3/etc/profile.d/conda.sh
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
-nvidia-smi
+# nvidia-smi
 
 
 conda activate olmo-code
@@ -35,7 +35,14 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export WANDB_DISABLED=true
 
 # Run training with accelerate
-# accelerate launch --multi_gpu --num_processes=8 unsupervised_finetuning.py
-accelerate launch --config_file accelerate_config.json unsupervised_finetuning.py
+CONFIG_PATH=/fsx/ubuntu/users/dikhulla/olmo-code-sft/configs/py2_py3_special_tokens.json
+
+echo "=========================================="
+echo "CONFIGURATION FILE CONTENTS:"
+echo "=========================================="
+cat $CONFIG_PATH
+echo "=========================================="
+
+accelerate launch --config_file accelerate_config.json unsupervised_finetuning.py --config $CONFIG_PATH
 
 echo "Job finished!"
