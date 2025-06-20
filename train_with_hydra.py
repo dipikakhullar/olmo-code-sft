@@ -26,6 +26,7 @@ from datasets import Dataset, load_dataset
 from omegaconf import DictConfig, OmegaConf
 import hydra
 from hydra.utils import get_original_cwd
+import wandb
 
 # Local imports
 from evaluate import get_eval_components
@@ -33,6 +34,33 @@ from evaluate import get_eval_components
 # Global variables to store losses
 training_losses = []
 validation_losses = []
+
+# =============================================================================
+# WANDB SETUP
+# =============================================================================
+
+def setup_wandb(cfg: DictConfig):
+    """Setup Weights & Biases logging"""
+    try:
+        # Initialize wandb
+        wandb.init(
+            project=cfg.wandb.project,
+            entity=cfg.wandb.entity,
+            name=cfg.wandb.name,
+            tags=cfg.wandb.tags,
+            config=OmegaConf.to_container(cfg, resolve=True),
+            log_model=cfg.wandb.log_model
+        )
+        
+        print(f"✅ WandB initialized: {wandb.run.name}")
+        return wandb
+        
+    except ImportError:
+        print("⚠️  WandB not installed. Skipping logging.")
+        return None
+    except Exception as e:
+        print(f"⚠️  Failed to initialize WandB: {e}")
+        return None
 
 # =============================================================================
 # LOSS TRACKING FUNCTIONS
@@ -105,8 +133,11 @@ def plot_losses(training_losses, validation_losses, output_dir, loss_save_interv
         
         print(f"Loss plot saved to {plot_path}")
         
+        return plot_path
+        
     except ImportError:
         print("matplotlib not available, skipping plot generation")
+        return None
 
 def print_final_statistics(training_losses, validation_losses):
     """Print final loss statistics"""
@@ -144,6 +175,17 @@ class LossTrackingCallback(TrainerCallback):
             latest_log = state.log_history[-1]
             if 'loss' in latest_log:
                 training_losses.append(latest_log['loss'])
+                
+                # Log to wandb if available
+                try:
+                    import wandb
+                    if wandb.run is not None:
+                        wandb.log({
+                            "train/loss": latest_log['loss'],
+                            "train/step": state.global_step
+                        })
+                except:
+                    pass
         
         # Save losses every save_interval steps
         if state.global_step % self.save_interval == 0 and state.global_step != self.last_save_step:
@@ -165,6 +207,17 @@ class LossTrackingCallback(TrainerCallback):
         if metrics and 'eval_loss' in metrics:
             validation_losses.append(metrics['eval_loss'])
             print(f"Validation loss at step {state.global_step}: {metrics['eval_loss']:.4f}")
+            
+            # Log to wandb if available
+            try:
+                import wandb
+                if wandb.run is not None:
+                    wandb.log({
+                        "eval/loss": metrics['eval_loss'],
+                        "eval/step": state.global_step
+                    })
+            except:
+                pass
 
 class GPUMemoryCallback(TrainerCallback):
     """Callback to monitor GPU memory usage"""
@@ -258,9 +311,15 @@ def setup_model_and_tokenizer(cfg: DictConfig):
     print(f"Loading model: {cfg.model_name}")
     tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
 
-    if cfg.experiment == "py2_py3_special_tokens":
-        special_tokens_dict = {"additional_special_tokens": cfg.special_tokens}
-        tokenizer.add_special_tokens(special_tokens_dict)
+    if cfg.experiment == "py2_py3_special_tokens" and cfg.special_tokens:
+        # Ensure special tokens are strings and not empty
+        special_tokens = [str(token) for token in cfg.special_tokens if token]
+        if special_tokens:
+            special_tokens_dict = {"additional_special_tokens": special_tokens}
+            print(f"Adding special tokens: {special_tokens}")
+            tokenizer.add_special_tokens(special_tokens_dict)
+        else:
+            print("No special tokens to add")
 
     model = AutoModelForCausalLM.from_pretrained(cfg.model_name)
     model.resize_token_embeddings(len(tokenizer))  # Needed after adding tokens
@@ -317,7 +376,7 @@ def create_trainer(model, tokenizer, train_dataset, eval_dataset, training_args,
 # MAIN TRAINING FUNCTION
 # =============================================================================
 
-@hydra.main(version_base=None, config_path="conf", config_name="config")
+@hydra.main(version_base=None, config_path="hydra_configs", config_name="py3_only")
 def main(cfg: DictConfig):
     """Main training function with Hydra configuration"""
     # Set environment variables
@@ -331,6 +390,9 @@ def main(cfg: DictConfig):
     # Print device information
     print(f"Using device: {torch.cuda.get_device_name(0)}")
     print(f"# of GPUs: {torch.cuda.device_count()}")
+    
+    # Setup wandb
+    wandb_run = setup_wandb(cfg)
     
     # Print configuration
     print("\n" + "="*50)
@@ -362,6 +424,11 @@ def main(cfg: DictConfig):
     results = trainer.evaluate()
     print("Final evaluation results:", results)
     
+    # Log final results to wandb
+    if wandb_run:
+        wandb_run.log({"final_eval_loss": results.get("eval_loss", 0)})
+        wandb_run.log({"final_eval_perplexity": results.get("eval_perplexity", 0)})
+    
     # Final loss analysis
     print("\n" + "="*50)
     print("FINAL LOSS ANALYSIS")
@@ -375,7 +442,11 @@ def main(cfg: DictConfig):
     print_loss_summary(training_losses, validation_losses)
     
     # Generate loss plot
-    plot_losses(training_losses, validation_losses, cfg.output_dir, cfg.loss_tracking.loss_save_interval)
+    plot_path = plot_losses(training_losses, validation_losses, cfg.output_dir, cfg.loss_tracking.loss_save_interval)
+    
+    # Log plot to wandb
+    if wandb_run and plot_path:
+        wandb_run.log({"loss_plot": wandb.Image(plot_path)})
     
     # Print statistics
     print_final_statistics(training_losses, validation_losses)
@@ -391,6 +462,11 @@ def main(cfg: DictConfig):
     with open(os.path.join(cfg.output_dir, "config.yaml"), "w") as f:
         OmegaConf.save(cfg, f)
     print(f"  - config.yaml (final configuration)")
+    
+    # Finish wandb run
+    if wandb_run:
+        wandb_run.finish()
+        print("✅ WandB run finished")
 
 if __name__ == "__main__":
     main() 

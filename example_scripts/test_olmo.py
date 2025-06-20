@@ -1,7 +1,7 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-olmo = AutoModelForCausalLM.from_pretrained("allenai/OLMo-2-0425-1B")
-tokenizer = AutoTokenizer.from_pretrained("allenai/OLMo-2-0425-1B")
+olmo = AutoModelForCausalLM.from_pretrained("dipikakhullar/olmo-code-python2-3-special-tokens")
+tokenizer = AutoTokenizer.from_pretrained("dipikakhullar/olmo-code-python2-3-special-tokens")
 message = ["Language modeling is "]
 inputs = tokenizer(message, return_tensors='pt', return_token_type_ids=False)
 # optional verifying cuda

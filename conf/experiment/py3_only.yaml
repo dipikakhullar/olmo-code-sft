@@ -1,3 +1,0 @@
-experiment: "py3_only"
-data:
-  max_files: 1  # Override for faster testing 

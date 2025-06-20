@@ -1,3 +1,0 @@
-experiment: "py2_py3_special_tokens"
-data:
-  max_files: 2 
