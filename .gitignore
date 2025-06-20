@@ -288,13 +288,6 @@ dvc.lock
 # =============================================================================
 # CUSTOM PROJECT FILES
 # =============================================================================
-# Config files that might contain sensitive info
-configs/*.json
-!configs/example*.json
-
-# Model upload scripts (might contain tokens)
-push_to_hf.py
-
 # Large experiment outputs
 experiments/
 results/
