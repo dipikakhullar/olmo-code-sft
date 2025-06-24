@@ -59,6 +59,8 @@ eval_dataset = Dataset.from_list(eval_data).map(preprocess_eval)
 # ----------------------
 # Metric: Causal LM Loss
 # ----------------------
+
+# for validation, this is good, same loss calculation on validation set. 
 def compute_metrics(eval_pred: EvalPrediction):
     logits, labels = eval_pred.predictions, eval_pred.label_ids
     logits = torch.tensor(logits)

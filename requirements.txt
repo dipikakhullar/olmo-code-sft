@@ -6,4 +6,5 @@ torch>=2.0.0
 accelerate>=0.20.0
 huggingface-hub>=0.15.0
 numpy>=1.24.0
-matplotlib>=3.7.0 
+matplotlib>=3.7.0
+wandb>=0.15.0 

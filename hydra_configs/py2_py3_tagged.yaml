@@ -1,0 +1,64 @@
+# Python 2 + 3 Training Config
+# With tags: [python2], [python3]
+
+# Model settings
+model_name: "allenai/OLMo-2-0425-1B"
+
+# Global settings
+output_dir: ${hydra:runtime.output_dir}/models/py2_py3_tagged
+seed: 42
+
+# Weights & Biases settings
+wandb:
+  project: "olmo-code-sft"
+  entity: null  # Set to your wandb username if needed
+  name: "py2_py3_tagged"
+  tags: ["python2", "python3", "tagged"]
+  log_model: false
+
+# Training settings
+training:
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 2
+  num_train_epochs: 1
+  max_length: 512
+  save_steps: 100
+  save_total_limit: 5
+  logging_steps: 1
+  fp16: false
+  bf16: true
+  optim: "adamw_torch_fused"
+  ddp_find_unused_parameters: false
+  learning_rate: 5e-5
+  warmup_steps: 100
+  weight_decay: 0.01
+
+# Data processing settings
+data:
+  max_files: 2
+  tokenize_batch_size: 1000
+  num_proc: 4
+  data_path_pattern: "/fsx/ubuntu/users/dikhulla/olmo-code-cleaned/*.jsonl"
+
+# Loss tracking settings
+loss_tracking:
+  loss_save_interval: 10
+
+# Experiment type
+experiment: "py2_py3_tagged"
+
+# Tags for Python versions
+special_tokens: ["[python2]", "[python3]"]
+
+# Sweep configuration (uncomment to enable sweeps)
+# hydra:
+#   sweeper:
+#     params:
+#       training.learning_rate: 1e-5,5e-5,1e-4
+#       training.per_device_batch_size: 1,2
+#       training.gradient_accumulation_steps: 2,4
+#       training.num_train_epochs: 0.5,1,2
+#       training.max_length: 256,512,1024
+#       data.max_files: 1,2,3
+#       training.weight_decay: 0.01,0.1
+#       training.warmup_steps: 50,100,200 

@@ -1,0 +1,74 @@
+# Python 2 + 3 Training Config
+# With special tokens added to tokenizer: [python2], [python3]
+
+# Model settings
+model_name: "allenai/OLMo-2-0425-1B"
+
+# Global settings
+output_dir: ${hydra:runtime.output_dir}/models/py2_py3_special_tokens
+seed: 42
+
+# Weights & Biases settings
+wandb:
+  project: "olmo-code-sft"
+  entity: null  # Set to your wandb username if needed
+  name: "py2_py3_special_tokens"
+  tags: ["python2", "python3", "special_tokens"]
+  log_model: false
+
+# Training settings
+# 8 A100s 40GB each
+training:
+  per_device_batch_size: 8
+  gradient_accumulation_steps: 2
+  num_train_epochs: 5
+  max_length: 512 # TODO pick p90 p95 for the text field in the dataset. 
+  save_steps: 100
+  save_total_limit: 5
+  logging_steps: 1
+  fp16: false
+  bf16: true
+  optim: "adamw_torch_fused"
+  ddp_find_unused_parameters: false
+  learning_rate: 5e-5
+  warmup_steps: 700
+
+  # 180k per file, 2 "chunks" --> 360k samples. samples per step 8*8 * 2  128. 
+  # 360k / 128 = 2812.5 steps.  
+  # we want warmup ratio to be .1/ or .05 with respect to the total training steps = 2812.5 steps. * 5 epochs. 
+  # 2812.5 * 5 = 14062.5 steps. 
+  # 14062.5 * .05 = 703.125 steps. 
+  # 14062.5 * .1 = 1406.25 steps. 
+  # 14062.5 * .2 = 2812.5 steps. 
+  # 14062.5 * .3 = 4218.75 steps. 
+  # 14062.5 * .4 = 5625 steps. 
+  # 14062.5 * .5 = 7031.25 steps. 
+
+  # if this doesn't work, try on a dummy dataset of 10 examples. 
+  weight_decay: 0.01
+
+# Data processing settings
+data:
+  max_files: 2
+  tokenize_batch_size: 1000
+  num_proc: 4
+  data_path_pattern: "/fsx/ubuntu/users/dikhulla/olmo-code-cleaned/*.jsonl"
+
+# Loss tracking settings
+loss_tracking:
+  loss_save_interval: 10
+
+# Experiment type
+experiment: "py2_py3_special_tokens"
+
+# Special tokens added to tokenizer vocabulary
+special_tokens: ["[python2]", "[python3]"]
+
+# Sweep configuration - focused on key hyperparameters
+hydra:
+  sweeper:
+    params:
+      training.learning_rate: 4e-6,1e-5,5e-5,1e-4, 
+      training.gradient_accumulation_steps: 2,4
+      training.weight_decay: 0.01,0.1
+      training.warmup_steps: 50,100 
