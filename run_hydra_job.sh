@@ -34,6 +34,9 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 # Enable wandb logging (set to false to disable)
 export WANDB_DISABLED=false
 
+# Set WandB API key (replace with your actual API key from wandb.ai/settings)
+export WANDB_API_KEY="eb7e7a0f5bda2236f62f395c457f0ece7f78f5df"
+
 # Run training with Hydra
 echo "=========================================="
 echo "RUNNING HYDRA-BASED TRAINING"
@@ -48,7 +51,7 @@ echo "=========================================="
 
 # OPTION 2: Hyperparameter sweep (uncomment to enable)
 echo "Using config: py2_py3_special_tokens.yaml (Python 2+3 with special tokens)"
-echo "Running HYPERPARAMETER SWEEP (96 combinations)"
+echo "Running HYPERPARAMETER SWEEP"
 accelerate launch --config_file accelerate_config.json train_with_hydra.py --config-name py2_py3_special_tokens -m
 
 # OPTION 3: Other single experiments (uncomment as needed)

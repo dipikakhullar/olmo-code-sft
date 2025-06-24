@@ -7,6 +7,7 @@ import os
 import json
 import csv
 import math
+import warnings
 from glob import glob
 from typing import Dict, Any
 
@@ -29,11 +30,16 @@ from hydra.utils import get_original_cwd
 import wandb
 
 # Local imports
-from evaluate import get_eval_components
+from evaluate import get_eval_components, get_data_split_components
 
 # Global variables to store losses
 training_losses = []
 validation_losses = []
+
+# Suppress warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*tokenizer.*deprecated.*")
 
 # =============================================================================
 # WANDB SETUP
@@ -48,8 +54,7 @@ def setup_wandb(cfg: DictConfig):
             entity=cfg.wandb.entity,
             name=cfg.wandb.name,
             tags=cfg.wandb.tags,
-            config=OmegaConf.to_container(cfg, resolve=True),
-            log_model=cfg.wandb.log_model
+            config=OmegaConf.to_container(cfg, resolve=True)
         )
         
         print(f"✅ WandB initialized: {wandb.run.name}")
@@ -184,8 +189,8 @@ class LossTrackingCallback(TrainerCallback):
                             "train/loss": latest_log['loss'],
                             "train/step": state.global_step
                         })
-                except:
-                    pass
+                except Exception as e:
+                    print(f"Failed to log to WandB: {e}")
         
         # Save losses every save_interval steps
         if state.global_step % self.save_interval == 0 and state.global_step != self.last_save_step:
@@ -195,10 +200,9 @@ class LossTrackingCallback(TrainerCallback):
             save_losses_to_json(training_losses, validation_losses, self.output_dir)
             save_losses_to_csv(training_losses, validation_losses, self.output_dir, self.save_interval)
             
-            # Print summary
-            print(f"\n--- Loss Summary at Step {state.global_step} ---")
-            print_loss_summary(training_losses, validation_losses)
-            print("---\n")
+            # Print summary (less verbose)
+            if training_losses:
+                print(f"Step {state.global_step}: Loss = {training_losses[-1]:.4f}")
     
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
         global validation_losses
@@ -216,8 +220,8 @@ class LossTrackingCallback(TrainerCallback):
                         "eval/loss": metrics['eval_loss'],
                         "eval/step": state.global_step
                     })
-            except:
-                pass
+            except Exception as e:
+                print(f"Failed to log validation loss to WandB: {e}")
 
 class GPUMemoryCallback(TrainerCallback):
     """Callback to monitor GPU memory usage"""
@@ -235,8 +239,10 @@ def preprocess_text(example, language_tag="[python3]", tokenizer=None):
         tokenizer.add_tokens([language_tag], special_tokens=True)
     return {"text": text}
 
-def load_training_data(cfg: DictConfig):
-    """Load and prepare training dataset based on experiment config."""
+def load_and_split_training_data(cfg: DictConfig):
+    """Load and split training data into train/validation/test sets with experiment-specific logic"""
+    print(f"Loading and splitting data for experiment '{cfg.experiment}'...")
+    
     # Match filenames depending on which extensions we want
     pattern = cfg.data.data_path_pattern
     all_files = sorted([
@@ -256,6 +262,7 @@ def load_training_data(cfg: DictConfig):
     print(f"Loading {len(files)} files for experiment '{cfg.experiment}'")
     dataset = load_dataset("json", data_files={"train": files}, split="train")
 
+    # Apply experiment-specific preprocessing
     if cfg.experiment == "py2_py3_tagged":
         def add_tag(example):
             ext = example.get("metadata", {}).get("extension", "unknown")
@@ -272,7 +279,30 @@ def load_training_data(cfg: DictConfig):
             return example
         dataset = dataset.map(add_tag)
 
-    return dataset
+    # Shuffle and split the dataset
+    dataset = dataset.shuffle(seed=cfg.seed)
+    
+    # TEMPORARY: Limit to first 10 samples for testing
+    dataset = dataset.select(range(min(1000, len(dataset))))
+    print(f"TESTING MODE: Limited dataset to {len(dataset)} samples")
+    
+    total_size = len(dataset)
+    
+    val_ratio = cfg.data.val_ratio if hasattr(cfg.data, 'val_ratio') else 0.1
+    test_ratio = cfg.data.test_ratio if hasattr(cfg.data, 'test_ratio') else 0.1
+    
+    val_size = int(total_size * val_ratio)
+    test_size = int(total_size * test_ratio)
+    train_size = total_size - val_size - test_size
+    
+    print(f"Dataset split: {train_size} train, {val_size} validation, {test_size} test")
+    
+    # Split the dataset
+    train_dataset = dataset.select(range(train_size))
+    val_dataset = dataset.select(range(train_size, train_size + val_size))
+    test_dataset = dataset.select(range(train_size + val_size, total_size))
+    
+    return train_dataset, val_dataset, test_dataset
 
 def tokenize_function(example, tokenizer, max_length=512):
     """Tokenize text for causal language modeling"""
@@ -340,22 +370,22 @@ def create_training_arguments(cfg: DictConfig):
         logging_steps=cfg.training.logging_steps,
         save_steps=cfg.training.save_steps,
         save_total_limit=cfg.training.save_total_limit,
-        report_to="none",
+        eval_strategy="steps" if hasattr(cfg.training, 'eval_steps') else "no",
+        eval_steps=cfg.training.eval_steps if hasattr(cfg.training, 'eval_steps') else None,
+        report_to="wandb",
         fp16=cfg.training.fp16,
         bf16=cfg.training.bf16,
         ddp_find_unused_parameters=cfg.training.ddp_find_unused_parameters,
         optim=cfg.training.optim,
+        gradient_checkpointing=cfg.training.gradient_checkpointing if hasattr(cfg.training, 'gradient_checkpointing') else False,
     )
 
-def create_trainer(model, tokenizer, train_dataset, eval_dataset, training_args, cfg: DictConfig):
+def create_trainer(model, tokenizer, train_dataset, val_dataset, training_args, cfg: DictConfig, compute_metrics):
     """Create and configure trainer"""
     # Data collator for causal language modeling
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     
-    # Get evaluation components
-    _, _, compute_metrics = get_eval_components()
-    
-    # Create callbacks
+    # Create callbacks - removed GPUMemoryCallback to reduce logging
     callbacks = [
         GPUMemoryCallback(), 
         LossTrackingCallback(save_interval=cfg.loss_tracking.loss_save_interval, output_dir=cfg.output_dir)
@@ -365,7 +395,7 @@ def create_trainer(model, tokenizer, train_dataset, eval_dataset, training_args,
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
+        eval_dataset=val_dataset,
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
@@ -379,8 +409,12 @@ def create_trainer(model, tokenizer, train_dataset, eval_dataset, training_args,
 @hydra.main(version_base=None, config_path="hydra_configs", config_name="py3_only")
 def main(cfg: DictConfig):
     """Main training function with Hydra configuration"""
-    # Set environment variables
+    # Set environment variables for memory optimization
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"  # For better error reporting
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Reduce memory usage
+    os.environ["PYTORCH_NO_CUDA_MEMORY_CACHING"] = "1"  # Disable memory caching
+    os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"  # Limit CUDA connections
     
     # Set random seed
     if cfg.seed is not None:
@@ -405,15 +439,21 @@ def main(cfg: DictConfig):
     model, tokenizer = setup_model_and_tokenizer(cfg)
     
     # Load and prepare data
-    train_dataset = load_training_data(cfg)
+    train_dataset, val_dataset, test_dataset = load_and_split_training_data(cfg)
+    
+    # Tokenize datasets using config values
+    print("Tokenizing training dataset...")
     train_dataset = prepare_dataset(train_dataset, tokenizer, cfg)
     
-    # Get evaluation dataset
-    eval_dataset, _, _ = get_eval_components()
+    print("Tokenizing validation dataset...")
+    val_dataset = prepare_dataset(val_dataset, tokenizer, cfg)
+    
+    # Get evaluation components (for compute_metrics and data_collator)
+    _, _, compute_metrics = get_eval_components()
     
     # Create training arguments and trainer
     training_args = create_training_arguments(cfg)
-    trainer = create_trainer(model, tokenizer, train_dataset, eval_dataset, training_args, cfg)
+    trainer = create_trainer(model, tokenizer, train_dataset, val_dataset, training_args, cfg, compute_metrics)
     
     # Train the model
     print("Starting training...")
