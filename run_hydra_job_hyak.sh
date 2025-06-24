@@ -8,15 +8,13 @@
 #SBATCH --gpus=8
 #SBATCH --mem=256G
 #SBATCH --time=24:00:00
-#SBATCH --partition=gpu-a100
-#SBATCH --account=xlab
+#SBATCH --nodelist=ip-10-4-112-88
 
-# Hyak-specific environment setup
+
 export CUDA_HOME=/usr/local/cuda-12.1
 export PATH=$CUDA_HOME/bin:$PATH
 
-# Load conda
-source /mmfs1/home/lux32/miniconda3/etc/profile.d/conda.sh
+source /fsx/ubuntu/miniconda3/etc/profile.d/conda.sh
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 nvidia-smi
 

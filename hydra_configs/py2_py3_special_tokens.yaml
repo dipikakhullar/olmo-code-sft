@@ -16,12 +16,12 @@ wandb:
   tags: ["python2", "python3", "special_tokens"]
 
 # Training settings
-# 8 A100s 40GB each
+# 8 A100s 80GB each - much more memory available
 training:
-  per_device_batch_size: 8
-  gradient_accumulation_steps: 2
+  per_device_batch_size: 16  # Increased from 8
+  gradient_accumulation_steps: 1  # Reduced from 2 since we have larger batch size
   num_train_epochs: 5
-  max_length: 1096 # TODO pick p90 p95 for the text field in the dataset. 
+  max_length: 2048  # Increased from 1096 for better context
   save_steps: 100
   save_total_limit: 5
   logging_steps: 1

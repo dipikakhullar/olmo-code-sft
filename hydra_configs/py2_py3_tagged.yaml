@@ -38,7 +38,7 @@ data:
   max_files: 2
   tokenize_batch_size: 1000
   num_proc: 4
-  data_path_pattern: "/fsx/ubuntu/users/dikhulla/olmo-code-cleaned/*.jsonl"
+  data_path_pattern: "/gscratch/stf/lux32/olmo-code-cleaned/*.jsonl"
   val_ratio: 0.1  # 10% for validation
   test_ratio: 0.1  # 10% for test
 
