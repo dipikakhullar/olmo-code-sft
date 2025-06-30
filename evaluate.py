@@ -16,9 +16,11 @@ import random
 # ----------------------
 # Load model + tokenizer
 # ----------------------
+import os
 model_name = "allenai/OLMo-2-0425-1B"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(model_name)
+hf_token = os.getenv('HF_TOKEN')
+tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
+model = AutoModelForCausalLM.from_pretrained(model_name, token=hf_token)
 
 # ----------------------
 # Data loading and splitting functions
@@ -193,7 +195,7 @@ trainer = Trainer(
 
 def get_eval_components():
     """Get evaluation components (legacy function for backward compatibility)"""
-    return eval_dataset, data_collator, compute_metrics
+    return eval_dataset, data_collator, None  # Return None for compute_metrics
 
 def get_data_split_components(data_path_pattern, experiment_type, max_files=2, val_ratio=0.1, test_ratio=0.1, max_length=512, tokenize_batch_size=1000, num_proc=4, seed=42):
     """
@@ -226,7 +228,7 @@ def get_data_split_components(data_path_pattern, experiment_type, max_files=2, v
     val_dataset = tokenize_with_config(val_raw, "Tokenizing validation dataset")
     test_dataset = tokenize_with_config(test_raw, "Tokenizing test dataset")
     
-    return train_dataset, val_dataset, test_dataset, data_collator, compute_metrics
+    return train_dataset, val_dataset, test_dataset, data_collator, None  # Return None for compute_metrics
 
 # ----------------------
 # Run Evaluation

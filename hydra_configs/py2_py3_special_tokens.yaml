@@ -16,22 +16,28 @@ wandb:
   tags: ["python2", "python3", "special_tokens"]
 
 # Training settings
-# 8 A100s 80GB each - much more memory available
+# Optimized for 4x H100 80GB GPUs based on profiling
 training:
-  per_device_batch_size: 16  # Increased from 8
-  gradient_accumulation_steps: 1  # Reduced from 2 since we have larger batch size
+  per_device_batch_size: 8  # From profiling: optimal for 1024 seq length
+  gradient_accumulation_steps: 8  # 32 × 4 GPUs × 2 = 256 effective batch size
   num_train_epochs: 5
-  max_length: 2048  # Increased from 1096 for better context
+  max_length: 4096  # Increased from 1096 for better context
   save_steps: 100
   save_total_limit: 5
   logging_steps: 1
-  eval_steps: 50  # Evaluate every 50 steps
+  eval_steps: 2  # Evaluate every 2 steps for testing
   fp16: false
   bf16: true
   optim: "adamw_torch_fused"
   ddp_find_unused_parameters: false
   learning_rate: 4e-6
   warmup_steps: 700
+
+  # Evaluation settings to prevent OOM
+  per_device_eval_batch_size: 1  # Much smaller for evaluation
+  dataloader_pin_memory: false  # Reduce memory usage
+  remove_unused_columns: true  # Clean up unused data
+  eval_accumulation_steps: 1  # Reduce accumulation during evaluation
 
   # 180k per file, 2 "chunks" --> 360k samples. samples per step 4*8 * 2 = 64. 
   # 360k / 64 = 5625 steps.  
@@ -48,16 +54,16 @@ training:
 
 # Data processing settings
 data:
-  max_files: 1
-  tokenize_batch_size: 1000
+  max_files: 2  # Use both dummy files
+  tokenize_batch_size: 100
   num_proc: 4
-  data_path_pattern: "/gscratch/stf/lux32/olmo-code-cleaned/*.jsonl"
+  data_path_pattern: "olmo_code_dummy/*.jsonl"  # Using dummy data for testing
   val_ratio: 0.1  # 10% for validation
   test_ratio: 0.1  # 10% for test
 
 # Loss tracking settings
 loss_tracking:
-  loss_save_interval: 10
+  loss_save_interval: 1  # Print loss every step
 
 # Experiment type
 experiment: "py2_py3_special_tokens"

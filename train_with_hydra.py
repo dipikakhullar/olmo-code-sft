@@ -30,7 +30,7 @@ from hydra.utils import get_original_cwd
 import wandb
 
 # Local imports
-from evaluate import get_eval_components, get_data_split_components
+# from evaluate import get_eval_components, get_data_split_components  # No longer needed
 
 # Global variables to store losses
 training_losses = []
@@ -44,6 +44,16 @@ warnings.filterwarnings("ignore", message=".*tokenizer.*deprecated.*")
 # =============================================================================
 # WANDB SETUP
 # =============================================================================
+
+def cleanup_memory():
+    """Clean up GPU memory"""
+    import gc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+
 
 def setup_wandb(cfg: DictConfig):
     """Setup Weights & Biases logging"""
@@ -337,9 +347,16 @@ def prepare_dataset(dataset, tokenizer, cfg: DictConfig):
 # =============================================================================
 
 def setup_model_and_tokenizer(cfg: DictConfig):
+
     """Load and setup model and tokenizer"""
     print(f"Loading model: {cfg.model_name}")
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
+    
+    # Get Hugging Face token from environment
+    hf_token = os.getenv('HF_TOKEN')
+    if not hf_token:
+        print("Warning: HF_TOKEN not found in environment variables")
+    
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model_name, token=hf_token)
 
     if cfg.experiment == "py2_py3_special_tokens" and cfg.special_tokens:
         # Ensure special tokens are strings and not empty
@@ -351,8 +368,18 @@ def setup_model_and_tokenizer(cfg: DictConfig):
         else:
             print("No special tokens to add")
 
-    model = AutoModelForCausalLM.from_pretrained(cfg.model_name)
+
+
+
+    model = AutoModelForCausalLM.from_pretrained(cfg.model_name, token=hf_token)
+    
+    
+    # 🔍 Debug print BEFORE resizing
+    print(f"Original model vocab size: {model.config.vocab_size}")
+    print(f"Updated tokenizer vocab size: {len(tokenizer)}")
+
     model.resize_token_embeddings(len(tokenizer))  # Needed after adding tokens
+    
 
     # Enable gradient checkpointing for memory efficiency
     model.gradient_checkpointing_enable()
@@ -361,24 +388,42 @@ def setup_model_and_tokenizer(cfg: DictConfig):
 
 def create_training_arguments(cfg: DictConfig):
     """Create training arguments"""
-    return TrainingArguments(
-        output_dir=cfg.output_dir,
-        overwrite_output_dir=True,
-        per_device_train_batch_size=cfg.training.per_device_batch_size,
-        gradient_accumulation_steps=cfg.training.gradient_accumulation_steps,
-        num_train_epochs=cfg.training.num_train_epochs,
-        logging_steps=cfg.training.logging_steps,
-        save_steps=cfg.training.save_steps,
-        save_total_limit=cfg.training.save_total_limit,
-        eval_strategy="steps" if hasattr(cfg.training, 'eval_steps') else "no",
-        eval_steps=cfg.training.eval_steps if hasattr(cfg.training, 'eval_steps') else None,
-        report_to="wandb",
-        fp16=cfg.training.fp16,
-        bf16=cfg.training.bf16,
-        ddp_find_unused_parameters=cfg.training.ddp_find_unused_parameters,
-        optim=cfg.training.optim,
-        gradient_checkpointing=cfg.training.gradient_checkpointing if hasattr(cfg.training, 'gradient_checkpointing') else False,
-    )
+    # Base arguments
+    args_dict = {
+        "output_dir": cfg.output_dir,
+        "overwrite_output_dir": True,
+        "per_device_train_batch_size": cfg.training.per_device_batch_size,
+        "gradient_accumulation_steps": cfg.training.gradient_accumulation_steps,
+        "num_train_epochs": cfg.training.num_train_epochs,
+        "logging_steps": cfg.training.logging_steps,
+        "save_steps": cfg.training.save_steps,
+        "save_total_limit": cfg.training.save_total_limit,
+        "eval_strategy": "steps" if hasattr(cfg.training, 'eval_steps') else "no",
+        "eval_steps": cfg.training.eval_steps if hasattr(cfg.training, 'eval_steps') else None,
+        "report_to": "wandb",
+        "fp16": cfg.training.fp16,
+        "bf16": cfg.training.bf16,
+        "ddp_find_unused_parameters": cfg.training.ddp_find_unused_parameters,
+        "optim": cfg.training.optim,
+        "gradient_checkpointing": cfg.training.gradient_checkpointing if hasattr(cfg.training, 'gradient_checkpointing') else False,
+    }
+    
+    # Add evaluation-specific parameters if they exist
+    if hasattr(cfg.training, 'per_device_eval_batch_size'):
+        args_dict["per_device_eval_batch_size"] = cfg.training.per_device_eval_batch_size
+    
+    if hasattr(cfg.training, 'dataloader_pin_memory'):
+        args_dict["dataloader_pin_memory"] = cfg.training.dataloader_pin_memory
+    
+    if hasattr(cfg.training, 'remove_unused_columns'):
+        args_dict["remove_unused_columns"] = cfg.training.remove_unused_columns
+    
+    if hasattr(cfg.training, 'eval_accumulation_steps'):
+        args_dict["eval_accumulation_steps"] = cfg.training.eval_accumulation_steps
+    else:
+        args_dict["eval_accumulation_steps"] = 8  # Default fallback
+    
+    return TrainingArguments(**args_dict)
 
 def create_trainer(model, tokenizer, train_dataset, val_dataset, training_args, cfg: DictConfig, compute_metrics):
     """Create and configure trainer"""
@@ -410,6 +455,8 @@ def create_trainer(model, tokenizer, train_dataset, val_dataset, training_args, 
 def main(cfg: DictConfig):
     """Main training function with Hydra configuration"""
     # Set environment variables for memory optimization
+    cleanup_memory()
+    os.environ["NCCL_DEBUG"] = "WARN"  # or "INFO", or "ERROR"
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"  # For better error reporting
     os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Reduce memory usage
@@ -449,18 +496,26 @@ def main(cfg: DictConfig):
     val_dataset = prepare_dataset(val_dataset, tokenizer, cfg)
     
     # Get evaluation components (for compute_metrics and data_collator)
-    _, _, compute_metrics = get_eval_components()
+    # _, _, compute_metrics = get_eval_components()
     
     # Create training arguments and trainer
     training_args = create_training_arguments(cfg)
-    trainer = create_trainer(model, tokenizer, train_dataset, val_dataset, training_args, cfg, compute_metrics)
-    
+    trainer = create_trainer(model, tokenizer, train_dataset, val_dataset, training_args, cfg, None)
+
+    # Fix the trainer dataset configuration
+    if hasattr(trainer, 'train_dataset') and trainer.train_dataset is not None:
+        from transformers.trainer_pt_utils import IterableDatasetShard
+        if isinstance(trainer.train_dataset, IterableDatasetShard):
+            trainer.train_dataset.drop_last = False
+
     # Train the model
     print("Starting training...")
     trainer.train()
     
     # Evaluate final model
     print("Evaluating final model...")
+    original_eval_batch_size = trainer.args.per_device_eval_batch_size
+
     results = trainer.evaluate()
     print("Final evaluation results:", results)
     
