@@ -5,7 +5,7 @@
 model_name: "allenai/OLMo-2-0425-1B"
 
 # Global settings
-output_dir: ${hydra:runtime.output_dir}/models/py2_py3_special_tokens
+output_dir: /mnt/nvme3/dipika/olmo-code-sft/outputs/models/py2_py3_special_tokens
 seed: 42
 
 # Weights & Biases settings
@@ -16,22 +16,25 @@ wandb:
   tags: ["python2", "python3", "special_tokens"]
 
 # Training settings
-# Optimized for 4x H100 80GB GPUs based on profiling
+# Optimized for 8x H100 80GB GPUs based on profiling
+
+# effective batch size = 4*4*4 = 64. 
 training:
-  per_device_batch_size: 8  # From profiling: optimal for 1024 seq length
-  gradient_accumulation_steps: 8  # 32 × 4 GPUs × 2 = 256 effective batch size
+  per_device_batch_size: 8  # Increased from 4 to 8
+  gradient_accumulation_steps: 4  # Reduced from 8 to 4 (8 × 8 GPUs × 4 = 256 effective batch size)
   num_train_epochs: 5
-  max_length: 4096  # Increased from 1096 for better context
+  max_length: 4096  # Keep this for now
   save_steps: 100
-  save_total_limit: 5
+  save_total_limit: 2
   logging_steps: 1
-  eval_steps: 2  # Evaluate every 2 steps for testing
+  eval_steps: 100  # Evaluate every 2 steps for testing
   fp16: false
   bf16: true
   optim: "adamw_torch_fused"
   ddp_find_unused_parameters: false
   learning_rate: 4e-6
   warmup_steps: 700
+  gradient_checkpointing: true  # Enable gradient checkpointing for memory efficiency
 
   # Evaluation settings to prevent OOM
   per_device_eval_batch_size: 1  # Much smaller for evaluation
@@ -39,25 +42,27 @@ training:
   remove_unused_columns: true  # Clean up unused data
   eval_accumulation_steps: 1  # Reduce accumulation during evaluation
 
-  # 180k per file, 2 "chunks" --> 360k samples. samples per step 4*8 * 2 = 64. 
-  # 360k / 64 = 5625 steps.  
-  # we want warmup ratio to be .1/ or .05 with respect to the total training steps = 5625 steps. * 5 epochs. 
-  # 5625 * .05 = 281.25 steps. 
-  # 5625 * .1 = 562.5 steps. 
-  # 5625 * .2 = 1125 steps. 
-  # 5625 * .3 = 1687.5 steps. 
-  # 5625 * .4 = 2250 steps. 
-  # 5625 * .5 = 2812.5 steps. 
+  # 180k per file, 14 "chunks" --> 2M samples. samples per step 4*8 * 8 = 256. 
+  # 2M / 256 = 7812.5 steps.  
+  # we want warmup ratio to be .1/ or .05 with respect to the total training  steps = 7812.5 steps. * 5 epochs. 
+  # 7812.5 * .05 = 390.625 steps. 
+  # 7812.5 * .1 = 781.25 steps. 
+  # 7812.5 * .2 = 1562.5 steps. 
+  # 7812.5 * .3 = 2343.75 steps. 
+  # 7812.5 * .4 = 3125 steps. 
+  # 7812.5 * .5 = 3906.25 steps. 
 
   # if this doesn't work, try on a dummy dataset of 10 examples. 
   weight_decay: 0.01
 
 # Data processing settings
 data:
-  max_files: 2  # Use both dummy files
-  tokenize_batch_size: 100
-  num_proc: 4
-  data_path_pattern: "olmo_code_dummy/*.jsonl"  # Using dummy data for testing
+  max_files: 14  # Use all available files (7 python2 + 7 python3)
+  tokenize_batch_size: 100  # Optimized based on profiling (was 1000)
+  num_proc: 8  # Back to original setting
+  data_path_pattern: "olmo-code-balanced/*.jsonl"  # Using balanced data
+  # data_path_pattern: "olmo_code_dummy/*.jsonl"
+
   val_ratio: 0.1  # 10% for validation
   test_ratio: 0.1  # 10% for test
 

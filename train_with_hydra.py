@@ -21,7 +21,8 @@ from transformers import (
     TrainingArguments, 
     DataCollatorForLanguageModeling,
     TrainerCallback,
-    EvalPrediction
+    EvalPrediction,
+    EarlyStoppingCallback
 )
 from datasets import Dataset, load_dataset
 from omegaconf import DictConfig, OmegaConf
@@ -31,10 +32,6 @@ import wandb
 
 # Local imports
 # from evaluate import get_eval_components, get_data_split_components  # No longer needed
-
-# Global variables to store losses
-training_losses = []
-validation_losses = []
 
 # Suppress warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -56,26 +53,8 @@ def cleanup_memory():
 
 
 def setup_wandb(cfg: DictConfig):
-    """Setup Weights & Biases logging"""
-    try:
-        # Initialize wandb
-        wandb.init(
-            project=cfg.wandb.project,
-            entity=cfg.wandb.entity,
-            name=cfg.wandb.name,
-            tags=cfg.wandb.tags,
-            config=OmegaConf.to_container(cfg, resolve=True)
-        )
-        
-        print(f"✅ WandB initialized: {wandb.run.name}")
-        return wandb
-        
-    except ImportError:
-        print("⚠️  WandB not installed. Skipping logging.")
-        return None
-    except Exception as e:
-        print(f"⚠️  Failed to initialize WandB: {e}")
-        return None
+    """Setup Weights & Biases logging - not needed with automatic Trainer integration"""
+    return None
 
 # =============================================================================
 # LOSS TRACKING FUNCTIONS
@@ -94,23 +73,6 @@ def save_losses_to_json(training_losses, validation_losses, output_dir):
     
     print(f"Losses saved to {os.path.join(output_dir, 'losses.json')}")
 
-def save_losses_to_csv(training_losses, validation_losses, output_dir, loss_save_interval=10):
-    """Save training and validation losses to CSV file"""
-    os.makedirs(output_dir, exist_ok=True)
-    
-    with open(os.path.join(output_dir, "losses.csv"), "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["step", "training_loss", "validation_loss"])
-        
-        # Get the maximum length to handle different lengths
-        max_len = max(len(training_losses), len(validation_losses))
-        
-        for i in range(max_len):
-            train_loss = training_losses[i] if i < len(training_losses) else None
-            val_loss = validation_losses[i] if i < len(validation_losses) else None
-            writer.writerow([i * loss_save_interval, train_loss, val_loss])
-    
-    print(f"Losses saved to {os.path.join(output_dir, 'losses.csv')}")
 
 def print_loss_summary(training_losses, validation_losses):
     """Print a summary of current losses"""
@@ -121,54 +83,6 @@ def print_loss_summary(training_losses, validation_losses):
     print(f"Total training loss points: {len(training_losses)}")
     print(f"Total validation loss points: {len(validation_losses)}")
 
-def plot_losses(training_losses, validation_losses, output_dir, loss_save_interval=10):
-    """Plot training and validation losses (if matplotlib is available)"""
-    try:
-        import matplotlib.pyplot as plt
-        
-        steps = list(range(0, len(training_losses) * loss_save_interval, loss_save_interval))
-        
-        plt.figure(figsize=(12, 6))
-        plt.plot(steps, training_losses, label='Training Loss', marker='o', markersize=3)
-        
-        if validation_losses:
-            val_steps = list(range(0, len(validation_losses) * 50, 50))
-            plt.plot(val_steps, validation_losses, label='Validation Loss', marker='s', markersize=3)
-        
-        plt.xlabel('Training Steps')
-        plt.ylabel('Loss')
-        plt.title('Training and Validation Losses')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        
-        plot_path = os.path.join(output_dir, "loss_plot.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print(f"Loss plot saved to {plot_path}")
-        
-        return plot_path
-        
-    except ImportError:
-        print("matplotlib not available, skipping plot generation")
-        return None
-
-def print_final_statistics(training_losses, validation_losses):
-    """Print final loss statistics"""
-    if training_losses:
-        print(f"\nTraining Loss Statistics:")
-        print(f"  Min: {min(training_losses):.4f}")
-        print(f"  Max: {max(training_losses):.4f}")
-        print(f"  Mean: {np.mean(training_losses):.4f}")
-        print(f"  Final: {training_losses[-1]:.4f}")
-
-    if validation_losses:
-        print(f"\nValidation Loss Statistics:")
-        print(f"  Min: {min(validation_losses):.4f}")
-        print(f"  Max: {max(validation_losses):.4f}")
-        print(f"  Mean: {np.mean(validation_losses):.4f}")
-        print(f"  Final: {validation_losses[-1]:.4f}")
 
 # =============================================================================
 # CUSTOM CALLBACKS
@@ -181,63 +95,50 @@ class LossTrackingCallback(TrainerCallback):
         self.save_interval = save_interval
         self.last_save_step = 0
         self.output_dir = output_dir
+        self.training_losses = []  # Use instance variable instead of global
+        self.validation_losses = []  # Use instance variable instead of global
     
     def on_step_end(self, args, state, control, **kwargs):
-        global training_losses, validation_losses
-        
-        # Track training loss
-        if hasattr(state, 'log_history') and state.log_history:
-            latest_log = state.log_history[-1]
-            if 'loss' in latest_log:
-                training_losses.append(latest_log['loss'])
-                
-                # Log to wandb if available
-                try:
-                    import wandb
-                    if wandb.run is not None:
-                        wandb.log({
-                            "train/loss": latest_log['loss'],
-                            "train/step": state.global_step
-                        })
-                except Exception as e:
-                    print(f"Failed to log to WandB: {e}")
-        
         # Save losses every save_interval steps
         if state.global_step % self.save_interval == 0 and state.global_step != self.last_save_step:
             self.last_save_step = state.global_step
             
-            # Save to both JSON and CSV
-            save_losses_to_json(training_losses, validation_losses, self.output_dir)
-            save_losses_to_csv(training_losses, validation_losses, self.output_dir, self.save_interval)
+            # Save to JSON
+            save_losses_to_json(self.training_losses, self.validation_losses, self.output_dir)
             
-            # Print summary (less verbose)
-            if training_losses:
-                print(f"Step {state.global_step}: Loss = {training_losses[-1]:.4f}")
+            # Print summary
+            if self.training_losses:
+                print(f"Step {state.global_step}: Saved {len(self.training_losses)} training losses, {len(self.validation_losses)} validation losses")
+    
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        # Capture training losses from logs (this is called after each step with the actual loss)
+        if logs and 'loss' in logs and 'eval_loss' not in logs:
+            # This is a training step log (not evaluation)
+            self.training_losses.append(logs['loss'])
+            # Print every 100 steps to reduce spam
+            if state.global_step % 100 == 0:
+                print(f"Step {state.global_step}: Training Loss = {logs['loss']:.4f}")
+        
+        # Capture validation losses from logs
+        if logs and 'eval_loss' in logs:
+            self.validation_losses.append(logs['eval_loss'])
+            print(f"Step {state.global_step}: Validation Loss = {logs['eval_loss']:.4f}")
+            print(f"Total validation losses recorded: {len(self.validation_losses)}")
     
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
-        global validation_losses
-        
-        # Track validation loss
+        # This is a backup - validation losses should be captured in on_log
         if metrics and 'eval_loss' in metrics:
-            validation_losses.append(metrics['eval_loss'])
-            print(f"Validation loss at step {state.global_step}: {metrics['eval_loss']:.4f}")
-            
-            # Log to wandb if available
-            try:
-                import wandb
-                if wandb.run is not None:
-                    wandb.log({
-                        "eval/loss": metrics['eval_loss'],
-                        "eval/step": state.global_step
-                    })
-            except Exception as e:
-                print(f"Failed to log validation loss to WandB: {e}")
+            # Only add if not already captured in on_log
+            if not self.validation_losses or self.validation_losses[-1] != metrics['eval_loss']:
+                self.validation_losses.append(metrics['eval_loss'])
+                print(f"Step {state.global_step}: Validation Loss (from on_evaluate) = {metrics['eval_loss']:.4f}")
+                print(f"Total validation losses recorded: {len(self.validation_losses)}")
 
 class GPUMemoryCallback(TrainerCallback):
     """Callback to monitor GPU memory usage"""
     
     def on_step_end(self, args, state, control, **kwargs):
-        print(f"Step {state.global_step}: GPU mem = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+        print(f" Step {state.global_step}: GPU mem = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
 
 # =============================================================================
 # DATA PROCESSING FUNCTIONS
@@ -292,9 +193,9 @@ def load_and_split_training_data(cfg: DictConfig):
     # Shuffle and split the dataset
     dataset = dataset.shuffle(seed=cfg.seed)
     
-    # TEMPORARY: Limit to first 10 samples for testing
-    dataset = dataset.select(range(min(1000, len(dataset))))
-    print(f"TESTING MODE: Limited dataset to {len(dataset)} samples")
+    # # TEMPORARY: Limit to first 10 samples for testing
+    # dataset = dataset.select(range(min(1000, len(dataset))))
+    # print(f"TESTING MODE: Limited dataset to {len(dataset)} samples")
     
     total_size = len(dataset)
     
@@ -347,7 +248,6 @@ def prepare_dataset(dataset, tokenizer, cfg: DictConfig):
 # =============================================================================
 
 def setup_model_and_tokenizer(cfg: DictConfig):
-
     """Load and setup model and tokenizer"""
     print(f"Loading model: {cfg.model_name}")
     
@@ -356,30 +256,51 @@ def setup_model_and_tokenizer(cfg: DictConfig):
     if not hf_token:
         print("Warning: HF_TOKEN not found in environment variables")
     
+    # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(cfg.model_name, token=hf_token)
+    print(f"Initial tokenizer vocab size: {len(tokenizer)}")
 
-    if cfg.experiment == "py2_py3_special_tokens" and cfg.special_tokens:
+    # Add special tokens if needed (only for this experiment)
+    if cfg.experiment == "py2_py3_special_tokens" and hasattr(cfg, 'special_tokens') and cfg.special_tokens:
         # Ensure special tokens are strings and not empty
         special_tokens = [str(token) for token in cfg.special_tokens if token]
         if special_tokens:
-            special_tokens_dict = {"additional_special_tokens": special_tokens}
-            print(f"Adding special tokens: {special_tokens}")
-            tokenizer.add_special_tokens(special_tokens_dict)
+            # Check if tokens already exist
+            existing_tokens = []
+            new_tokens = []
+            for token in special_tokens:
+                token_id = tokenizer.convert_tokens_to_ids(token)
+                if token_id != tokenizer.unk_token_id:
+                    existing_tokens.append(token)
+                else:
+                    new_tokens.append(token)
+            
+            if existing_tokens:
+                print(f"Special tokens already exist: {existing_tokens}")
+            if new_tokens:
+                print(f"Adding new special tokens: {new_tokens}")
+                special_tokens_dict = {"additional_special_tokens": new_tokens}
+                num_added = tokenizer.add_special_tokens(special_tokens_dict)
+                print(f"Added {num_added} new tokens")
         else:
             print("No special tokens to add")
-
-
-
-
-    model = AutoModelForCausalLM.from_pretrained(cfg.model_name, token=hf_token)
     
+    print(f"Final tokenizer vocab size: {len(tokenizer)}")
+
+    # Load model
+    model = AutoModelForCausalLM.from_pretrained(cfg.model_name, token=hf_token)
     
     # 🔍 Debug print BEFORE resizing
     print(f"Original model vocab size: {model.config.vocab_size}")
     print(f"Updated tokenizer vocab size: {len(tokenizer)}")
 
-    model.resize_token_embeddings(len(tokenizer))  # Needed after adding tokens
-    
+    # Resize model embeddings to match tokenizer
+    if model.config.vocab_size != len(tokenizer):
+        print(f"Resizing model embeddings from {model.config.vocab_size} to {len(tokenizer)}")
+        model.resize_token_embeddings(len(tokenizer))
+        print(f"Model vocab size after resize: {model.config.vocab_size}")
+    else:
+        print("Model and tokenizer vocab sizes match, no resize needed")
 
     # Enable gradient checkpointing for memory efficiency
     model.gradient_checkpointing_enable()
@@ -400,12 +321,15 @@ def create_training_arguments(cfg: DictConfig):
         "save_total_limit": cfg.training.save_total_limit,
         "eval_strategy": "steps" if hasattr(cfg.training, 'eval_steps') else "no",
         "eval_steps": cfg.training.eval_steps if hasattr(cfg.training, 'eval_steps') else None,
-        "report_to": "wandb",
+        "report_to": "wandb",  # Re-enable automatic WandB integration
         "fp16": cfg.training.fp16,
         "bf16": cfg.training.bf16,
         "ddp_find_unused_parameters": cfg.training.ddp_find_unused_parameters,
         "optim": cfg.training.optim,
         "gradient_checkpointing": cfg.training.gradient_checkpointing if hasattr(cfg.training, 'gradient_checkpointing') else False,
+        "load_best_model_at_end": True,  # Load the best model at the end of training
+        "metric_for_best_model": "eval_loss",  # Use validation loss to determine best model
+        "greater_is_better": False,  # Lower loss is better
     }
     
     # Add evaluation-specific parameters if they exist
@@ -430,13 +354,16 @@ def create_trainer(model, tokenizer, train_dataset, val_dataset, training_args, 
     # Data collator for causal language modeling
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     
-    # Create callbacks - removed GPUMemoryCallback to reduce logging
+    # Create callbacks
+    loss_callback = LossTrackingCallback(save_interval=cfg.loss_tracking.loss_save_interval, output_dir=cfg.output_dir)
+    early_stopping_callback = EarlyStoppingCallback(early_stopping_patience=3)
     callbacks = [
         GPUMemoryCallback(), 
-        LossTrackingCallback(save_interval=cfg.loss_tracking.loss_save_interval, output_dir=cfg.output_dir)
+        loss_callback,
+        early_stopping_callback
     ]
     
-    return Trainer(
+    trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
@@ -446,6 +373,11 @@ def create_trainer(model, tokenizer, train_dataset, val_dataset, training_args, 
         compute_metrics=compute_metrics,
         callbacks=callbacks,
     )
+    
+    # Store callback reference for later access
+    trainer.loss_callback = loss_callback
+    
+    return trainer
 
 # =============================================================================
 # MAIN TRAINING FUNCTION
@@ -457,11 +389,24 @@ def main(cfg: DictConfig):
     # Set environment variables for memory optimization
     cleanup_memory()
     os.environ["NCCL_DEBUG"] = "WARN"  # or "INFO", or "ERROR"
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"  # For better error reporting
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128,expandable_segments:True"
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "0"  # Changed from 1 for better performance
     os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Reduce memory usage
-    os.environ["PYTORCH_NO_CUDA_MEMORY_CACHING"] = "1"  # Disable memory caching
+    os.environ["PYTORCH_NO_CUDA_MEMORY_CACHING"] = "0"  # Allow caching for better performance
     os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"  # Limit CUDA connections
+    
+    # Additional memory optimization
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64,expandable_segments:True"
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"  # Enable for debugging OOM issues
+    os.environ["TORCH_USE_CUDA_DSA"] = "1"  # Enable device-side assertions
+    
+    # Set cache directories to locations with more space
+    os.environ["HF_HOME"] = "/mnt/nvme2/hf-cache/dipika_cache"
+    os.environ["TRANSFORMERS_CACHE"] = "/mnt/nvme2/hf-cache/dipika_cache"
+    os.environ["HF_DATASETS_CACHE"] = "/mnt/nvme2/hf-cache/dipika_cache"
+    
+    # Create cache directory if it doesn't exist
+    os.makedirs("/mnt/nvme2/hf-cache/dipika_cache", exist_ok=True)
     
     # Set random seed
     if cfg.seed is not None:
@@ -471,9 +416,6 @@ def main(cfg: DictConfig):
     # Print device information
     print(f"Using device: {torch.cuda.get_device_name(0)}")
     print(f"# of GPUs: {torch.cuda.device_count()}")
-    
-    # Setup wandb
-    wandb_run = setup_wandb(cfg)
     
     # Print configuration
     print("\n" + "="*50)
@@ -502,66 +444,40 @@ def main(cfg: DictConfig):
     training_args = create_training_arguments(cfg)
     trainer = create_trainer(model, tokenizer, train_dataset, val_dataset, training_args, cfg, None)
 
-    # Fix the trainer dataset configuration
-    if hasattr(trainer, 'train_dataset') and trainer.train_dataset is not None:
-        from transformers.trainer_pt_utils import IterableDatasetShard
-        if isinstance(trainer.train_dataset, IterableDatasetShard):
-            trainer.train_dataset.drop_last = False
-
     # Train the model
     print("Starting training...")
     trainer.train()
     
     # Evaluate final model
     print("Evaluating final model...")
-    original_eval_batch_size = trainer.args.per_device_eval_batch_size
 
     results = trainer.evaluate()
     print("Final evaluation results:", results)
-    
-    # Log final results to wandb
-    if wandb_run:
-        wandb_run.log({"final_eval_loss": results.get("eval_loss", 0)})
-        wandb_run.log({"final_eval_perplexity": results.get("eval_perplexity", 0)})
     
     # Final loss analysis
     print("\n" + "="*50)
     print("FINAL LOSS ANALYSIS")
     print("="*50)
     
+    # Get losses from callback
+    training_losses = trainer.loss_callback.training_losses
+    validation_losses = trainer.loss_callback.validation_losses
+    
     # Save final losses
     save_losses_to_json(training_losses, validation_losses, cfg.output_dir)
-    save_losses_to_csv(training_losses, validation_losses, cfg.output_dir, cfg.loss_tracking.loss_save_interval)
     
     # Print final summary
     print_loss_summary(training_losses, validation_losses)
-    
-    # Generate loss plot
-    plot_path = plot_losses(training_losses, validation_losses, cfg.output_dir, cfg.loss_tracking.loss_save_interval)
-    
-    # Log plot to wandb
-    if wandb_run and plot_path:
-        wandb_run.log({"loss_plot": wandb.Image(plot_path)})
-    
-    # Print statistics
-    print_final_statistics(training_losses, validation_losses)
     
     # Print file locations
     print(f"\nAll loss data saved to: {cfg.output_dir}")
     print("Files created:")
     print(f"  - losses.json (raw data)")
-    print(f"  - losses.csv (tabular data)")
-    print(f"  - loss_plot.png (visualization, if matplotlib available)")
     
     # Save final configuration
     with open(os.path.join(cfg.output_dir, "config.yaml"), "w") as f:
         OmegaConf.save(cfg, f)
     print(f"  - config.yaml (final configuration)")
-    
-    # Finish wandb run
-    if wandb_run:
-        wandb_run.finish()
-        print("✅ WandB run finished")
 
 if __name__ == "__main__":
     main() 

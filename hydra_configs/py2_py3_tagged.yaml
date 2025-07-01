@@ -5,7 +5,7 @@
 model_name: "allenai/OLMo-2-0425-1B"
 
 # Global settings
-output_dir: ${hydra:runtime.output_dir}/models/py2_py3_tagged
+output_dir: /mnt/nvme3/dipika/olmo-code-sft/outputs/models/py2_py3_tagged
 seed: 42
 
 # Weights & Biases settings
@@ -16,6 +16,10 @@ wandb:
   tags: ["python2", "python3", "tagged"]
 
 # Training settings
+
+# batch size * number of gpus * gradient accumulation steps = effective batch size
+# total training examples / effective batch size = number of steps 
+
 training:
   per_device_batch_size: 8
   gradient_accumulation_steps: 2
@@ -35,9 +39,9 @@ training:
 
 # Data processing settings
 data:
-  max_files: 2
+  max_files: 100
   tokenize_batch_size: 1000
-  num_proc: 4
+  num_proc: 8
   data_path_pattern: "/gscratch/stf/lux32/olmo-code-cleaned/*.jsonl"
   val_ratio: 0.1  # 10% for validation
   test_ratio: 0.1  # 10% for test

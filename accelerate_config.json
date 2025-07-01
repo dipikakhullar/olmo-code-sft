@@ -1,7 +1,7 @@
 {
   "compute_environment": "LOCAL_MACHINE",
   "distributed_type": "MULTI_GPU",
-  "num_processes": 4,
+  "num_processes": 8,
   "mixed_precision": "bf16",
   "use_cpu": false,
   "machine_rank": 0,

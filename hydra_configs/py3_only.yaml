@@ -5,7 +5,7 @@
 model_name: "allenai/OLMo-2-0425-1B"  # Keep this for now, but we'll reduce other settings
 
 # Global settings
-output_dir: ${hydra:runtime.output_dir}/models/py3_only
+output_dir: /mnt/nvme3/dipika/olmo-code-sft/outputs/models/py3_only
 seed: 42
 
 # Weights & Biases settings

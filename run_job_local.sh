@@ -3,6 +3,10 @@
 # Local environment setup
 echo "Setting up local environment for OLMO code fine-tuning..."
 
+# Set GPU devices FIRST - this is critical for distributed training
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+echo "Set CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+
 # Set CUDA environment
 export CUDA_HOME=/usr/local/cuda-12.1
 export PATH=$CUDA_HOME/bin:$PATH
@@ -18,6 +22,9 @@ echo "Conda environment activated."
 echo "Current Conda environment: $(conda info --envs | grep '*' | awk '{print $1}')"
 echo "Python path: $(which python)"
 
+export TMPDIR=/mnt/nvme3/dipika/tmp
+mkdir -p $TMPDIR
+
 # MEMORY OPTIMIZATION SETTINGS
 export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:128,expandable_segments:True"
 export CUDA_LAUNCH_BLOCKING=0  # Changed from 1 for better performance
@@ -30,11 +37,16 @@ export PYTORCH_NO_CUDA_MEMORY_CACHING=0  # Allow caching for better performance
 export NCCL_DEBUG=INFO
 export NCCL_IB_DISABLE=1
 
-# Set GPU devices to use only the last 4 GPUs (4, 5, 6, 7)
-export CUDA_VISIBLE_DEVICES=0,1,2,7
-
 # Set Hugging Face token for model access
 export HF_TOKEN=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
+
+# Set HuggingFace cache directories to nvme2
+export HF_HOME=/mnt/nvme2/hf-cache/dipika_cache
+export TRANSFORMERS_CACHE=/mnt/nvme2/hf-cache/dipika_cache
+export HF_DATASETS_CACHE=/mnt/nvme2/hf-cache/dipika_cache
+
+# Create cache directory if it doesn't exist
+mkdir -p /mnt/nvme3/dipika/hf_cache
 
 # Enable wandb logging (set to false to disable)
 export WANDB_DISABLED=false
