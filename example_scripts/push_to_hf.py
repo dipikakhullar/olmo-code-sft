@@ -9,7 +9,7 @@ import argparse
 from huggingface_hub import login, HfApi, create_repo, delete_repo
 
 # Your Hugging Face token
-HF_TOKEN = "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"
+HF_TOKEN = "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"
 
 def push_model_to_hf(
     model_path="./olmo-test-output",

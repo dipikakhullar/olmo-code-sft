@@ -20,7 +20,7 @@ training:
   per_device_batch_size: 8
   gradient_accumulation_steps: 4
   num_train_epochs: 5
-  max_length: 2048
+  max_length: 4096
   save_steps: 100
   save_total_limit: 5
   logging_steps: 1
@@ -33,12 +33,18 @@ training:
   warmup_steps: 700
   weight_decay: 0.01
   gradient_checkpointing: false
+  # Evaluation settings to reduce memory usage
+  per_device_eval_batch_size: 8  # Smaller batch size for evaluation
+  eval_accumulation_steps: 1  # No accumulation during evaluation
+  dataloader_num_workers: 64  # No multiprocessing for dataloader
+  dataloader_pin_memory: false  # Don't pin memory
+  remove_unused_columns: true  # Remove unused columns to save memory
 
 # Data processing settings
 data:
   max_files: 1
   tokenize_batch_size: 500
-  num_proc: 2
+  num_proc: 64
   data_path_pattern: "/gscratch/stf/lux32/olmo-code-cleaned/*.jsonl"
   val_ratio: 0.1  # 10% for validation
   test_ratio: 0.1  # 10% for test

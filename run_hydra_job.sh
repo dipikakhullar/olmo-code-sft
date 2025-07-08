@@ -15,6 +15,9 @@
 export CUDA_HOME=/usr/local/cuda-12.1
 export PATH=$CUDA_HOME/bin:$PATH
 
+# Source cache environment variables
+source "$(dirname "$0")/cache_env.sh"
+
 # Load conda
 source /mmfs1/home/lux32/miniconda3/etc/profile.d/conda.sh
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"

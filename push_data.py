@@ -16,13 +16,14 @@ from datetime import datetime
 # Hugging Face imports
 from huggingface_hub import HfApi, create_repo, upload_file
 from datasets import Dataset, DatasetDict
+from dotenv import load_dotenv
 
 # =============================================================================
 # CONFIGURATION - EDIT THESE VALUES
 # =============================================================================
-
+load_dotenv()
 # Your Hugging Face token - get it from https://huggingface.co/settings/tokens
-HF_TOKEN = "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"  # Replace with your actual token
+# HF_TOKEN = "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"  # Replace with your actual token
 
 # Your Hugging Face username (optional - if not set, will use your default account)
 HF_USERNAME = "dipikakhullar"  # Replace with your username if needed

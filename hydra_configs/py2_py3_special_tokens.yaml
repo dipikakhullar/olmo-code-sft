@@ -8,26 +8,23 @@ model_name: "allenai/OLMo-2-0425-1B"
 output_dir: /mnt/nvme3/dipika/olmo-code-sft/outputs/models/py2_py3_special_tokens
 seed: 42
 
-# Weights & Biases settings
 wandb:
   project: "olmo-code-sft"
   entity: null  # Set to your wandb username if needed
   name: "py2_py3_special_tokens"
   tags: ["python2", "python3", "special_tokens"]
 
-# Training settings
-# Optimized for 8x H100 80GB GPUs based on profiling
 
-# effective batch size = 4*4*4 = 64. 
+# effective batch size = 8*8*4 = 256
 training:
   per_device_batch_size: 8  # Increased from 4 to 8
   gradient_accumulation_steps: 4  # Reduced from 8 to 4 (8 × 8 GPUs × 4 = 256 effective batch size)
   num_train_epochs: 5
-  max_length: 4096  # Keep this for now
-  save_steps: 100
-  save_total_limit: 2
+  max_length: 4096  # Back to original setting for 80GB H100s
+  save_steps: 100  # Save model every 100 steps
+  save_total_limit: 5  # Keep more checkpoints for testing
   logging_steps: 1
-  eval_steps: 100  # Evaluate every 2 steps for testing
+  eval_steps: 100  # Evaluate every 2 steps
   fp16: false
   bf16: true
   optim: "adamw_torch_fused"
@@ -36,11 +33,19 @@ training:
   warmup_steps: 700
   gradient_checkpointing: true  # Enable gradient checkpointing for memory efficiency
 
-  # Evaluation settings to prevent OOM
-  per_device_eval_batch_size: 1  # Much smaller for evaluation
+  # Evaluation settings - OPTIMIZED FOR SPEED AND MEMORY
+  per_device_eval_batch_size: 8
   dataloader_pin_memory: false  # Reduce memory usage
   remove_unused_columns: true  # Clean up unused data
-  eval_accumulation_steps: 1  # Reduce accumulation during evaluation
+  eval_accumulation_steps: 1  # Keep at 1 (no gradient accumulation needed for eval)
+  dataloader_num_workers: 64  # Disable multiprocessing to reduce memory overhead
+  eval_delay: 0  # Start evaluation immediately
+  eval_strategy: "steps"  # Explicitly set evaluation strategy
+  eval_max_length: 4096  # Same as training max_length for consistent truncation
+
+  # Additional memory optimizations
+  max_grad_norm: 1.0
+  dataloader_drop_last: true  # Drop incomplete batches to avoid memory issues
 
   # 180k per file, 14 "chunks" --> 2M samples. samples per step 4*8 * 8 = 256. 
   # 2M / 256 = 7812.5 steps.  
@@ -57,14 +62,16 @@ training:
 
 # Data processing settings
 data:
+  cache_dir: ${oc.env:CACHE_DIR} # Read cache directory from environment variable
   max_files: 14  # Use all available files (7 python2 + 7 python3)
-  tokenize_batch_size: 100  # Optimized based on profiling (was 1000)
-  num_proc: 8  # Back to original setting
-  data_path_pattern: "olmo-code-balanced/*.jsonl"  # Using balanced data
+  tokenize_batch_size: 1000  # Optimized for speed (was 100)
+  num_proc: 32  # Original setting (may cause disk space issues)
+  # data_path_pattern: "olmo-code-balanced/*.jsonl"  # Using balanced data
+  data_path_pattern: "/mnt/nvme3/dipika/olmo-code-balanced/*.jsonl"
   # data_path_pattern: "olmo_code_dummy/*.jsonl"
 
-  val_ratio: 0.1  # 10% for validation
-  test_ratio: 0.1  # 10% for test
+  val_ratio: 0.05  # 5% validation (reasonable)
+  test_ratio: 0.05  # 5% test (reasonable)
 
 # Loss tracking settings
 loss_tracking:

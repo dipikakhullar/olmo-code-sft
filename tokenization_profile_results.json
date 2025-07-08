@@ -1,0 +1,158 @@
+[
+  {
+    "config": {
+      "batch_size": 1000,
+      "num_proc": 32,
+      "max_length": 4096
+    },
+    "duration": 286.8817639350891,
+    "memory_used": 0.19116973876953125,
+    "disk_used": 113.76835632324219,
+    "success": true,
+    "dataset_size": 2293586
+  },
+  {
+    "config": {
+      "batch_size": 100,
+      "num_proc": 32,
+      "max_length": 4096
+    },
+    "duration": 291.1006860733032,
+    "memory_used": 1.4796409606933594,
+    "disk_used": 113.776123046875,
+    "success": true,
+    "dataset_size": 2293586
+  },
+  {
+    "config": {
+      "batch_size": 500,
+      "num_proc": 32,
+      "max_length": 4096
+    },
+    "duration": 282.05958557128906,
+    "memory_used": 0.2840919494628906,
+    "disk_used": 113.76934432983398,
+    "success": true,
+    "dataset_size": 2293586
+  },
+  {
+    "config": {
+      "batch_size": 1000,
+      "num_proc": 32,
+      "max_length": 4096
+    },
+    "duration": 0.6759092807769775,
+    "memory_used": 0.1338348388671875,
+    "disk_used": 0.0,
+    "success": true,
+    "dataset_size": 2293586
+  },
+  {
+    "config": {
+      "batch_size": 100,
+      "num_proc": 16,
+      "max_length": 4096
+    },
+    "duration": 537.0333802700043,
+    "memory_used": 1.2843856811523438,
+    "disk_used": 113.77600479125977,
+    "success": true,
+    "dataset_size": 2293586
+  },
+  {
+    "config": {
+      "batch_size": 500,
+      "num_proc": 16,
+      "max_length": 4096
+    },
+    "duration": 547.052681684494,
+    "memory_used": 0.220977783203125,
+    "disk_used": 113.7691421508789,
+    "success": true,
+    "dataset_size": 2293586
+  },
+  {
+    "config": {
+      "batch_size": 1000,
+      "num_proc": 16,
+      "max_length": 4096
+    },
+    "duration": 544.0821902751923,
+    "memory_used": 0.13711166381835938,
+    "disk_used": 113.76831436157227,
+    "success": true,
+    "dataset_size": 2293586
+  },
+  {
+    "config": {
+      "batch_size": 100,
+      "num_proc": 8,
+      "max_length": 4096
+    },
+    "duration": 1052.9072904586792,
+    "memory_used": 1.4077568054199219,
+    "disk_used": 113.77617645263672,
+    "success": true,
+    "dataset_size": 2293586
+  },
+  {
+    "config": {
+      "batch_size": 500,
+      "num_proc": 8,
+      "max_length": 4096
+    },
+    "duration": 1036.0229847431183,
+    "memory_used": 0.281951904296875,
+    "disk_used": 113.76927185058594,
+    "success": true,
+    "dataset_size": 2293586
+  },
+  {
+    "config": {
+      "batch_size": 1000,
+      "num_proc": 8,
+      "max_length": 4096
+    },
+    "duration": 1002.0233945846558,
+    "memory_used": 0.01702880859375,
+    "disk_used": 113.76826477050781,
+    "success": true,
+    "dataset_size": 2293586
+  },
+  {
+    "config": {
+      "batch_size": 100,
+      "num_proc": 1,
+      "max_length": 4096
+    },
+    "duration": 7939.547224283218,
+    "memory_used": 12.700359344482422,
+    "disk_used": 113.77849197387695,
+    "success": true,
+    "dataset_size": 2293586
+  },
+  {
+    "config": {
+      "batch_size": 500,
+      "num_proc": 1,
+      "max_length": 4096
+    },
+    "duration": 8007.723832607269,
+    "memory_used": 0.3048095703125,
+    "disk_used": 113.75517654418945,
+    "success": true,
+    "dataset_size": 2293586
+  },
+  {
+    "config": {
+      "batch_size": 1000,
+      "num_proc": 1,
+      "max_length": 4096
+    },
+    "duration": 8144.087267637253,
+    "memory_used": 0.119720458984375,
+    "disk_used": 113.77059555053711,
+    "success": true,
+    "dataset_size": 2293586
+  }
+]

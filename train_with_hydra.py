@@ -4,10 +4,28 @@ Hydra-based training script for OLMo fine-tuning
 """
 
 import os
+
+# Set cache directory BEFORE importing any libraries
+os.environ['HF_HOME'] = '/mnt/nvme4/dipika/hf_cache'
+os.environ['TRANSFORMERS_CACHE'] = '/mnt/nvme4/dipika/hf_cache'
+os.environ['HF_DATASETS_CACHE'] = '/mnt/nvme4/dipika/hf_cache/datasets'
+os.environ['TMPDIR'] = '/mnt/nvme4/dipika/tmp'
+
+# Also set these to ensure they're available
+os.environ['HF_HUB_CACHE'] = '/mnt/nvme4/dipika/hf_cache'
+os.environ['TORCH_HOME'] = '/mnt/nvme4/dipika/torch_cache'
+
+# Create directories if they don't exist
+os.makedirs('/mnt/nvme4/dipika/hf_cache', exist_ok=True)
+os.makedirs('/mnt/nvme4/dipika/hf_cache/datasets', exist_ok=True)
+os.makedirs('/mnt/nvme4/dipika/tmp', exist_ok=True)
+os.makedirs('/mnt/nvme4/dipika/torch_cache', exist_ok=True)
+
 import json
 import csv
 import math
 import warnings
+import time
 from glob import glob
 from typing import Dict, Any
 
@@ -29,18 +47,32 @@ from omegaconf import DictConfig, OmegaConf
 import hydra
 from hydra.utils import get_original_cwd
 import wandb
+from dotenv import load_dotenv
 
-# Local imports
-# from evaluate import get_eval_components, get_data_split_components  # No longer needed
+load_dotenv()
+
+
+# Local imports (none needed)
 
 # Suppress warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*tokenizer.*deprecated.*")
 
+import tempfile
+tempfile.tempdir = "/mnt/nvme4/dipika/tmp"
+print(f"[INFO] Using tempdir: {tempfile.gettempdir()}")
+
+# Fix multiprocessing temp directory issue
+import multiprocessing.util
+multiprocessing.util._temp_dir = "/mnt/nvme4/dipika/tmp"
+print(f"[INFO] Using multiprocessing tempdir: {multiprocessing.util._temp_dir}")
+
+
 # =============================================================================
 # WANDB SETUP
 # =============================================================================
+
 
 def cleanup_memory():
     """Clean up GPU memory"""
@@ -49,8 +81,6 @@ def cleanup_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
-
-
 
 def setup_wandb(cfg: DictConfig):
     """Setup Weights & Biases logging - not needed with automatic Trainer integration"""
@@ -97,33 +127,48 @@ class LossTrackingCallback(TrainerCallback):
         self.output_dir = output_dir
         self.training_losses = []  # Use instance variable instead of global
         self.validation_losses = []  # Use instance variable instead of global
+        self.training_steps = []  # Track step numbers for training losses
+        self.validation_steps = []  # Track step numbers for validation losses
     
     def on_step_end(self, args, state, control, **kwargs):
-        # Save losses every save_interval steps
+        # Save losses every save_interval steps (more frequent saves)
         if state.global_step % self.save_interval == 0 and state.global_step != self.last_save_step:
             self.last_save_step = state.global_step
             
-            # Save to JSON
-            save_losses_to_json(self.training_losses, self.validation_losses, self.output_dir)
-            
-            # Print summary
-            if self.training_losses:
-                print(f"Step {state.global_step}: Saved {len(self.training_losses)} training losses, {len(self.validation_losses)} validation losses")
+            try:
+                # Save to JSON
+                save_losses_to_json(self.training_losses, self.validation_losses, self.output_dir)
+                
+                # Print summary
+                if self.training_losses:
+                    print(f"Step {state.global_step}: Saved {len(self.training_losses)} training losses, {len(self.validation_losses)} validation losses")
+            except Exception as e:
+                print(f"Warning: Failed to save losses at step {state.global_step}: {e}")
     
     def on_log(self, args, state, control, logs=None, **kwargs):
         # Capture training losses from logs (this is called after each step with the actual loss)
         if logs and 'loss' in logs and 'eval_loss' not in logs:
             # This is a training step log (not evaluation)
             self.training_losses.append(logs['loss'])
-            # Print every 100 steps to reduce spam
-            if state.global_step % 100 == 0:
+            self.training_steps.append(state.global_step)
+            
+            # Print every 50 steps to reduce spam but still provide feedback
+            if state.global_step % 50 == 0:
                 print(f"Step {state.global_step}: Training Loss = {logs['loss']:.4f}")
         
         # Capture validation losses from logs
         if logs and 'eval_loss' in logs:
             self.validation_losses.append(logs['eval_loss'])
+            self.validation_steps.append(state.global_step)
             print(f"Step {state.global_step}: Validation Loss = {logs['eval_loss']:.4f}")
             print(f"Total validation losses recorded: {len(self.validation_losses)}")
+            
+            # Save immediately after validation to prevent loss of data
+            try:
+                save_losses_to_json(self.training_losses, self.validation_losses, self.output_dir)
+                print(f"Step {state.global_step}: Validation losses saved immediately")
+            except Exception as e:
+                print(f"Warning: Failed to save validation losses at step {state.global_step}: {e}")
     
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
         # This is a backup - validation losses should be captured in on_log
@@ -131,14 +176,51 @@ class LossTrackingCallback(TrainerCallback):
             # Only add if not already captured in on_log
             if not self.validation_losses or self.validation_losses[-1] != metrics['eval_loss']:
                 self.validation_losses.append(metrics['eval_loss'])
+                self.validation_steps.append(state.global_step)
                 print(f"Step {state.global_step}: Validation Loss (from on_evaluate) = {metrics['eval_loss']:.4f}")
                 print(f"Total validation losses recorded: {len(self.validation_losses)}")
 
 class GPUMemoryCallback(TrainerCallback):
-    """Callback to monitor GPU memory usage"""
+    """Callback to monitor GPU memory usage and cleanup"""
     
     def on_step_end(self, args, state, control, **kwargs):
-        print(f" Step {state.global_step}: GPU mem = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / 1e9
+            reserved = torch.cuda.memory_reserved() / 1e9
+            print(f" Step {state.global_step}: GPU mem = {allocated:.2f} GB allocated, {reserved:.2f} GB reserved")
+            
+            # Aggressive cleanup every 10 steps
+            if state.global_step % 10 == 0:
+                torch.cuda.empty_cache()
+                print(f"🧹 Step {state.global_step}: Performed routine CUDA cache cleanup")
+
+class EvaluationDebugCallback(TrainerCallback):
+    """Callback to debug evaluation scheduling and manage memory"""
+    
+    def on_step_end(self, args, state, control, **kwargs):
+        # Check if evaluation should happen this step
+        if args.eval_strategy == "steps" and args.eval_steps:
+            if state.global_step % args.eval_steps == 0:
+                print(f"🔍 Step {state.global_step}: EVALUATION SHOULD HAPPEN (every {args.eval_steps} steps)")
+                # Clear cache before evaluation
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    print(f"🧹 Step {state.global_step}: Cleared CUDA cache before evaluation")
+    
+    def on_evaluate(self, args, state, control, **kwargs):
+        print(f"🚀 Step {state.global_step}: EVALUATION STARTED")
+        # Additional memory cleanup at start of evaluation
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            print(f"🧹 Step {state.global_step}: Cleared CUDA cache at evaluation start")
+    
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs and 'eval_loss' in logs:
+            print(f"✅ Step {state.global_step}: EVALUATION COMPLETED - eval_loss: {logs['eval_loss']:.4f}")
+            # Clear cache after evaluation
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                print(f"🧹 Step {state.global_step}: Cleared CUDA cache after evaluation")
 
 # =============================================================================
 # DATA PROCESSING FUNCTIONS
@@ -230,18 +312,28 @@ def prepare_dataset(dataset, tokenizer, cfg: DictConfig):
     """Prepare dataset by applying tokenization"""
     print(f"Tokenizing {len(dataset)} examples...")
     
-    # Use larger batch size for faster processing
+
+    # call map with the *name*, not a lambda
     tokenized_dataset = dataset.map(
-        lambda x: tokenize_function(x, tokenizer, cfg.training.max_length), 
-        batched=True, 
+        tokenize_function,
+        batched=True,
         batch_size=cfg.data.tokenize_batch_size,
-        remove_columns=dataset.column_names,
         num_proc=cfg.data.num_proc,
-        desc="Tokenizing dataset"
+        remove_columns=dataset.column_names,
+        fn_kwargs={"tokenizer": tokenizer, "max_length": cfg.training.max_length},
+        writer_batch_size=10_000,          # fewer Arrow record batches
+        desc="Tokenizing dataset",
     )
     
     print(f"Tokenization complete! Dataset size: {len(tokenized_dataset)}")
     return tokenized_dataset
+
+# =============================================================================
+# EVALUATION FUNCTIONS
+# =============================================================================
+
+# Note: We use compute_metrics=None in the trainer, so HuggingFace automatically
+# computes the default loss for causal language modeling
 
 # =============================================================================
 # MODEL SETUP
@@ -349,7 +441,7 @@ def create_training_arguments(cfg: DictConfig):
     
     return TrainingArguments(**args_dict)
 
-def create_trainer(model, tokenizer, train_dataset, val_dataset, training_args, cfg: DictConfig, compute_metrics):
+def create_trainer(model, tokenizer, train_dataset, val_dataset, training_args, cfg: DictConfig):
     """Create and configure trainer"""
     # Data collator for causal language modeling
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
@@ -357,10 +449,12 @@ def create_trainer(model, tokenizer, train_dataset, val_dataset, training_args, 
     # Create callbacks
     loss_callback = LossTrackingCallback(save_interval=cfg.loss_tracking.loss_save_interval, output_dir=cfg.output_dir)
     early_stopping_callback = EarlyStoppingCallback(early_stopping_patience=3)
+    eval_debug_callback = EvaluationDebugCallback()
     callbacks = [
         GPUMemoryCallback(), 
         loss_callback,
-        early_stopping_callback
+        early_stopping_callback,
+        eval_debug_callback
     ]
     
     trainer = Trainer(
@@ -370,7 +464,7 @@ def create_trainer(model, tokenizer, train_dataset, val_dataset, training_args, 
         eval_dataset=val_dataset,
         tokenizer=tokenizer,
         data_collator=data_collator,
-        compute_metrics=compute_metrics,
+        compute_metrics=None,
         callbacks=callbacks,
     )
     
@@ -400,13 +494,10 @@ def main(cfg: DictConfig):
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"  # Enable for debugging OOM issues
     os.environ["TORCH_USE_CUDA_DSA"] = "1"  # Enable device-side assertions
     
-    # Set cache directories to locations with more space
-    os.environ["HF_HOME"] = "/mnt/nvme2/hf-cache/dipika_cache"
-    os.environ["TRANSFORMERS_CACHE"] = "/mnt/nvme2/hf-cache/dipika_cache"
-    os.environ["HF_DATASETS_CACHE"] = "/mnt/nvme2/hf-cache/dipika_cache"
-    
-    # Create cache directory if it doesn't exist
-    os.makedirs("/mnt/nvme2/hf-cache/dipika_cache", exist_ok=True)
+    # Create cache directory if it doesn't exist (cache env vars already set at top)
+    os.makedirs("/mnt/nvme4/dipika/hf_cache", exist_ok=True)
+    os.makedirs("/mnt/nvme4/dipika/hf_cache/datasets", exist_ok=True)
+    os.makedirs("/mnt/nvme4/dipika/tmp", exist_ok=True)
     
     # Set random seed
     if cfg.seed is not None:
@@ -437,12 +528,9 @@ def main(cfg: DictConfig):
     print("Tokenizing validation dataset...")
     val_dataset = prepare_dataset(val_dataset, tokenizer, cfg)
     
-    # Get evaluation components (for compute_metrics and data_collator)
-    # _, _, compute_metrics = get_eval_components()
-    
     # Create training arguments and trainer
     training_args = create_training_arguments(cfg)
-    trainer = create_trainer(model, tokenizer, train_dataset, val_dataset, training_args, cfg, None)
+    trainer = create_trainer(model, tokenizer, train_dataset, val_dataset, training_args, cfg)
 
     # Train the model
     print("Starting training...")

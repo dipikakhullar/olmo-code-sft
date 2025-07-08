@@ -1,14 +1,14 @@
 #!/bin/bash
-# Local job runner for OLMo training
-# This script sets up environment variables and runs training locally
+# Local job runner for OLMo training with Accelerate
+# This script sets up environment variables and runs training locally with Accelerate
 
 set -e  # Exit on any error
 
 echo "=========================================="
-echo "SETTING UP LOCAL TRAINING ENVIRONMENT"
+echo "SETTING UP LOCAL TRAINING ENVIRONMENT (ACCELERATE)"
 echo "=========================================="
 
-echo "Environment variables will be set by train_with_hydra.py"
+echo "Environment variables will be set by train_with_hydra_accelerate.py"
 
 # Load conda
 echo "Loading conda environment..."
@@ -25,9 +25,9 @@ echo "Python path: $(which python)"
 export CUDA_HOME=/usr/local/cuda-12.1
 export PATH=$CUDA_HOME/bin:$PATH
 
-# Set PyTorch environment variables
+# Set PyTorch environment variables (optimized for Accelerate)
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export NCCL_DEBUG=INFO
+export NCCL_DEBUG=WARN  # Less verbose than INFO
 export NCCL_IB_DISABLE=1
 
 # Set GPU devices (adjust based on your setup)
@@ -47,12 +47,19 @@ df -h /
 export WANDB_DISABLED=false
 export WANDB_API_KEY="eb7e7a0f5bda2236f62f395c457f0ece7f78f5df"
 
+# Show Accelerate configuration
 echo "=========================================="
-echo "STARTING TRAINING"
+echo "ACCELERATE CONFIGURATION"
+echo "=========================================="
+echo "Accelerate config file: accelerate_config.json"
+cat accelerate_config.json
+
+echo "=========================================="
+echo "STARTING TRAINING WITH ACCELERATE"
 echo "=========================================="
 
-# Run training with Hydra
-# Choose your experiment type:
+# 🔥 KEY CHANGE: Use the new Accelerate-aware training script
+# The Trainer will automatically detect and use Accelerate's distributed setup
 
 # OPTION 1: Single experiment (current setting)
 echo "Using config: py2_py3_special_tokens.yaml (Python 2+3 with special tokens)"
