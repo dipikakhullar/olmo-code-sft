@@ -5,7 +5,7 @@
 model_name: "allenai/OLMo-2-0425-1B"
 
 # Global settings
-output_dir: /mnt/nvme3/dipika/olmo-code-sft/outputs/models/py2_py3_special_tokens
+output_dir: ./outputs/models/py2_py3_special_tokens
 seed: 42
 
 wandb:
@@ -67,7 +67,7 @@ data:
   tokenize_batch_size: 1000  # Optimized for speed (was 100)
   num_proc: 32  # Original setting (may cause disk space issues)
   # data_path_pattern: "olmo-code-balanced/*.jsonl"  # Using balanced data
-  data_path_pattern: "/mnt/nvme3/dipika/olmo-code-balanced/*.jsonl"
+  data_path_pattern: "/root/olmo-code-balanced/*.jsonl"
   # data_path_pattern: "olmo_code_dummy/*.jsonl"
 
   val_ratio: 0.05  # 5% validation (reasonable)

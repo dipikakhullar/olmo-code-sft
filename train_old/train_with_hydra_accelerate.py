@@ -12,20 +12,25 @@ from typing import Dict, Any
 import multiprocessing
 
 # Set cache directory BEFORE importing any libraries
-os.environ['HF_HOME'] = '/mnt/nvme4/dipika/hf_cache'
-os.environ['TRANSFORMERS_CACHE'] = '/mnt/nvme4/dipika/hf_cache'
-os.environ['HF_DATASETS_CACHE'] = '/mnt/nvme4/dipika/hf_cache/datasets'
-os.environ['TMPDIR'] = '/mnt/nvme4/dipika/tmp'
+cache_dir = os.path.join(os.getcwd(), 'cache')
+hf_cache = os.path.join(cache_dir, 'hf_cache')
+tmp_dir = os.path.join(cache_dir, 'tmp')
+torch_cache = os.path.join(cache_dir, 'torch_cache')
+
+os.environ['HF_HOME'] = hf_cache
+os.environ['TRANSFORMERS_CACHE'] = hf_cache
+os.environ['HF_DATASETS_CACHE'] = os.path.join(hf_cache, 'datasets')
+os.environ['TMPDIR'] = tmp_dir
 
 # Also set these to ensure they're available
-os.environ['HF_HUB_CACHE'] = '/mnt/nvme4/dipika/hf_cache'
-os.environ['TORCH_HOME'] = '/mnt/nvme4/dipika/torch_cache'
+os.environ['HF_HUB_CACHE'] = hf_cache
+os.environ['TORCH_HOME'] = torch_cache
 
 # Create directories if they don't exist
-os.makedirs('/mnt/nvme4/dipika/hf_cache', exist_ok=True)
-os.makedirs('/mnt/nvme4/dipika/hf_cache/datasets', exist_ok=True)
-os.makedirs('/mnt/nvme4/dipika/tmp', exist_ok=True)
-os.makedirs('/mnt/nvme4/dipika/torch_cache', exist_ok=True)
+os.makedirs(hf_cache, exist_ok=True)
+os.makedirs(os.path.join(hf_cache, 'datasets'), exist_ok=True)
+os.makedirs(tmp_dir, exist_ok=True)
+os.makedirs(torch_cache, exist_ok=True)
 
 import json
 import csv
@@ -54,7 +59,6 @@ import wandb
 from dotenv import load_dotenv
 from tqdm import tqdm
 
-# 🔥 NEW: Import Accelerator for better integration
 from accelerate import Accelerator
 
 load_dotenv()
@@ -65,7 +69,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*tokenizer.*deprecated.*")
 
 import tempfile
-tempfile.tempdir = "/mnt/nvme4/dipika/tmp"
+tempfile.tempdir = tmp_dir
 print(f"[INFO] Using tempdir: {tempfile.gettempdir()}")
 
 # Fix multiprocessing temp directory issue
@@ -660,9 +664,9 @@ def main(cfg: DictConfig):
     os.environ["TORCH_USE_CUDA_DSA"] = "1"
     
     # Create cache directory if it doesn't exist
-    os.makedirs("/mnt/nvme4/dipika/hf_cache", exist_ok=True)
-    os.makedirs("/mnt/nvme4/dipika/hf_cache/datasets", exist_ok=True)
-    os.makedirs("/mnt/nvme4/dipika/tmp", exist_ok=True)
+    os.makedirs(hf_cache, exist_ok=True)
+    os.makedirs(os.path.join(hf_cache, 'datasets'), exist_ok=True)
+    os.makedirs(tmp_dir, exist_ok=True)
     
     # Set random seed
     if cfg.seed is not None:

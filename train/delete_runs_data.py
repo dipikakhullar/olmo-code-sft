@@ -12,7 +12,7 @@ def delete_wandb_runs():
     """Delete all WandB runs for the project"""
     # Configuration
     entity = "dipika-khullar"  # or your organization/workspace name
-    project = "huggingface"
+    project = "lora-finetuning"
 
     try:
         # Initialize W&B API

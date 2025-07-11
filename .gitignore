@@ -299,3 +299,9 @@ results/
 *.backup
 *.old
 *.orig 
+
+train/wandb/
+train/outputs/
+train/cache/
+cache/
+dipika/

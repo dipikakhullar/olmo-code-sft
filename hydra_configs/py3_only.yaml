@@ -5,7 +5,7 @@
 model_name: "allenai/OLMo-2-0425-1B"  # Keep this for now, but we'll reduce other settings
 
 # Global settings
-output_dir: /mnt/nvme3/dipika/olmo-code-sft/outputs/models/py3_only
+output_dir: ./outputs/models/py3_only
 seed: 42
 
 # Weights & Biases settings
@@ -45,7 +45,7 @@ data:
   max_files: 1
   tokenize_batch_size: 500
   num_proc: 64
-  data_path_pattern: "/gscratch/stf/lux32/olmo-code-cleaned/*.jsonl"
+  data_path_pattern: "./data/olmo-code-cleaned/*.jsonl"
   val_ratio: 0.1  # 10% for validation
   test_ratio: 0.1  # 10% for test
 
