@@ -11,24 +11,35 @@ import json
 from glob import glob
 from typing import Dict, Any
 
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64,expandable_segments:True,roundup_power2_divisions:16"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["PYTORCH_NO_CUDA_MEMORY_CACHING"] = "0"
+os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
+
+# Disable some PyTorch optimizations that use memory
+os.environ["TORCH_CUDNN_V8_API_ENABLED"] = "1"
+os.environ["TORCH_CUDNN_BENCHMARK"] = "0"
+
 # Set cache directory BEFORE importing any libraries
-cache_dir = os.path.join(os.getcwd(), 'cache')
-hf_cache = os.path.join(cache_dir, 'hf_cache')
-tmp_dir = os.path.join(cache_dir, 'tmp')
-torch_cache = os.path.join(cache_dir, 'torch_cache')
+# cache_dir = os.path.join(os.getcwd(), 'cache')
+# hf_cache = os.path.join(cache_dir, 'hf_cache')
+# tmp_dir = os.path.join(cache_dir, 'tmp')
+# torch_cache = os.path.join(cache_dir, 'torch_cache')
 
-os.environ['HF_HOME'] = hf_cache
-os.environ['TRANSFORMERS_CACHE'] = hf_cache
-os.environ['HF_DATASETS_CACHE'] = os.path.join(hf_cache, 'datasets')
-os.environ['TMPDIR'] = tmp_dir
-os.environ['HF_HUB_CACHE'] = hf_cache
-os.environ['TORCH_HOME'] = torch_cache
+# os.environ['HF_HOME'] = hf_cache
+# os.environ['TRANSFORMERS_CACHE'] = hf_cache
+# os.environ['HF_DATASETS_CACHE'] = os.path.join(hf_cache, 'datasets')
+# os.environ['TMPDIR'] = tmp_dir
+# os.environ['HF_HUB_CACHE'] = hf_cache
+# os.environ['TORCH_HOME'] = torch_cache
 
-# Create directories if they don't exist
-os.makedirs(hf_cache, exist_ok=True)
-os.makedirs(os.path.join(hf_cache, 'datasets'), exist_ok=True)
-os.makedirs(tmp_dir, exist_ok=True)
-os.makedirs(torch_cache, exist_ok=True)
+# # Create directories if they don't exist
+# os.makedirs(hf_cache, exist_ok=True)
+# os.makedirs(os.path.join(hf_cache, 'datasets'), exist_ok=True)
+# os.makedirs(tmp_dir, exist_ok=True)
+# os.makedirs(torch_cache, exist_ok=True)
 
 import torch
 import torch.nn as nn
@@ -50,7 +61,8 @@ from tqdm import tqdm
 from dotenv import load_dotenv
 import wandb
 
-load_dotenv()
+# Load .env file from the current directory
+load_dotenv('.env')
 
 # Suppress warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -62,14 +74,14 @@ warnings.filterwarnings("ignore", message=".*tokenizer.*deprecated.*")
 # =============================================================================
 
 # Hardcoded dataset path - update this to your actual dataset location
-DATASET_PATH = "/root/olmo-code-balanced-small/*.jsonl"
+DATASET_PATH = "/mnt/nvme3/dipika/olmo-code-balanced/*.jsonl"
 
 # Training configuration dictionary
 # UPDATED CONFIG - Safer settings for debugging
 TRAINING_CONFIG = {
     # Model settings
     "model_name": "allenai/OLMo-1B-hf",
-    "experiment": "py3_only",
+    "experiment": "py2_py3_special_tokens",
     
     # Data settings
     "max_files": 10,
@@ -77,7 +89,7 @@ TRAINING_CONFIG = {
     "test_ratio": 0.01,
     "max_length": 4096,
     "tokenize_batch_size": 1000,
-    "num_proc": 16,
+    "num_proc": 32,
     
     # LoRA settings - MORE CONSERVATIVE
     "use_lora": True,
@@ -263,7 +275,6 @@ class MemoryCallback(TrainerCallback):
 # =============================================================================
 # DATA PROCESSING FUNCTIONS
 # =============================================================================
-
 def load_and_split_data(config: TrainingConfig):
     """Load and split training data"""
     print(f"Loading data for experiment '{config.experiment}'...")
@@ -313,13 +324,33 @@ def load_and_split_data(config: TrainingConfig):
             raise ValueError("Failed to load any dataset files")
 
     # Apply experiment-specific preprocessing
-    if config.experiment in ["py2_py3_tagged", "py2_py3_special_tokens"]:
-        def add_tag(example):
+    if config.experiment == "py2_py3_tagged":
+        # For tagged experiment: add text tags [python2] or [python3]
+        def add_text_tag(example):
             ext = example.get("metadata", {}).get("extension", "unknown")
             tag = f"[{ext}]" if ext in ("python2", "python3") else ""
-            example["text"] = f"{tag} {example['text']}"
+            example["text"] = f"{tag} {example['text']}" if tag else example["text"]
             return example
-        dataset = dataset.map(add_tag)
+        
+        print("Adding text tags for py2_py3_tagged experiment...")
+        dataset = dataset.map(add_text_tag)
+        
+    elif config.experiment == "py2_py3_special_tokens":
+        # For special tokens experiment: add special tokens (these should already be in tokenizer vocabulary)
+        def add_special_token_tag(example):
+            ext = example.get("metadata", {}).get("extension", "unknown")
+            if ext == "python2":
+                token = "[python2]"  # This should be a special token in tokenizer
+            elif ext == "python3":
+                token = "[python3]"  # This should be a special token in tokenizer
+            else:
+                token = ""
+            
+            example["text"] = f"{token} {example['text']}" if token else example["text"]
+            return example
+        
+        print("Adding special token tags for py2_py3_special_tokens experiment...")
+        dataset = dataset.map(add_special_token_tag)
 
     # Shuffle and split
     dataset = dataset.shuffle(seed=config.seed)
@@ -416,28 +447,36 @@ def setup_model_and_tokenizer(config: TrainingConfig):
     
     print(f"Tokenizer vocab size: {len(tokenizer)}")
 
-    # Load model - IMPORTANT: Don't use torch_dtype for LoRA
+    # Load model with proper settings for LoRA
     model = AutoModelForCausalLM.from_pretrained(
         config.model_name,
         token=hf_token,
         use_cache=False,  # Disable cache for training
         device_map=None,  # Let accelerate handle device placement
-        torch_dtype=torch.bfloat16,  # 🔧 CHANGED: Use bfloat16, not float32
-        low_cpu_mem_usage=True,      # 🔧 ADDED: Memory optimization
-        # torch_dtype=torch.float32,  # Use float32 for better LoRA compatibility
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True,
+        trust_remote_code=True,  # Add this for some models
     )
     
-    # Resize embeddings if needed
+    # Resize embeddings if needed BEFORE applying LoRA
     if model.config.vocab_size != len(tokenizer):
         print(f"Resizing model embeddings from {model.config.vocab_size} to {len(tokenizer)}")
         model.resize_token_embeddings(len(tokenizer))
-    
-    # CRITICAL: Ensure model is in training mode BEFORE applying LoRA
-    model.train()
+        
+        # CRITICAL: After resizing, ensure new embeddings require gradients
+        if hasattr(model, 'lm_head'):
+            model.lm_head.weight.requires_grad_(True)
+        if hasattr(model, 'embed_tokens'):
+            model.embed_tokens.weight.requires_grad_(True)
+        elif hasattr(model.model, 'embed_tokens'):
+            model.model.embed_tokens.weight.requires_grad_(True)
     
     # Apply LoRA if enabled
     if config.use_lora:
         print("Applying LoRA configuration...")
+        
+        # CRITICAL: Ensure model is in training mode BEFORE applying LoRA
+        model.train()
         
         # Auto-detect target modules if needed
         if config.lora_target_modules == "auto":
@@ -447,7 +486,7 @@ def setup_model_and_tokenizer(config: TrainingConfig):
             target_modules = config.lora_target_modules
             print(f"Using configured LoRA target modules: {target_modules}")
         
-        # Create LoRA config
+        # Create LoRA config with more conservative settings
         lora_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             r=config.lora_r,
@@ -455,7 +494,8 @@ def setup_model_and_tokenizer(config: TrainingConfig):
             lora_dropout=config.lora_dropout,
             target_modules=target_modules,
             bias="none",
-            inference_mode=False,  # CRITICAL: Ensure training mode
+            inference_mode=False,
+            modules_to_save=None,  # Don't save additional modules
         )
         
         # Apply LoRA to model
@@ -464,10 +504,20 @@ def setup_model_and_tokenizer(config: TrainingConfig):
         # CRITICAL: Explicitly enable training mode for LoRA
         model.train()
         
-        # CRITICAL: Ensure LoRA parameters require gradients
+        # CRITICAL: Enable gradients for all LoRA parameters
         for name, param in model.named_parameters():
-            if param.requires_grad:
-                print(f"Trainable parameter: {name}, shape: {param.shape}")
+            if 'lora' in name.lower():
+                param.requires_grad_(True)
+                print(f"LoRA parameter enabled: {name}")
+        
+        # CRITICAL: For models with resized embeddings, ensure they're trainable
+        if model.config.vocab_size != model.base_model.model.config.vocab_size:
+            print("Ensuring resized embeddings are trainable...")
+            # Find and enable gradients for embedding layers
+            for name, param in model.named_parameters():
+                if 'embed' in name.lower() or 'lm_head' in name.lower():
+                    param.requires_grad_(True)
+                    print(f"Embedding parameter enabled: {name}")
         
         # Print trainable parameters
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -479,17 +529,136 @@ def setup_model_and_tokenizer(config: TrainingConfig):
         # CRITICAL: Verify we have trainable parameters
         if trainable_params == 0:
             raise ValueError("No trainable parameters found! LoRA setup failed.")
+        
+        # CRITICAL: Double-check that we have gradients
+        has_gradients = any(p.requires_grad for p in model.parameters())
+        if not has_gradients:
+            raise ValueError("No parameters require gradients!")
+            
+        # Print some trainable parameter names for debugging
+        print("Sample trainable parameters:")
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                print(f"  - {name}: {param.shape}")
+                break  # Just show one example
     
     # Enable gradient checkpointing AFTER LoRA setup
     if config.gradient_checkpointing:
+        print("Enabling gradient checkpointing...")
         model.gradient_checkpointing_enable()
-        # CRITICAL: Ensure LoRA parameters still require gradients after checkpointing
+        
+        # CRITICAL: Re-enable gradients after checkpointing
         if config.use_lora:
             for name, param in model.named_parameters():
-                if 'lora' in name.lower():
+                if 'lora' in name.lower() or 'embed' in name.lower() or 'lm_head' in name.lower():
                     param.requires_grad_(True)
     
     return model, tokenizer
+
+
+# def setup_model_and_tokenizer(config: TrainingConfig):
+#     """Load model, tokenizer, and apply LoRA - FIXED VERSION"""
+#     print(f"Loading model: {config.model_name}")
+    
+#     # Get Hugging Face token
+#     hf_token = os.getenv('HF_TOKEN')
+    
+#     # Load tokenizer
+#     tokenizer = AutoTokenizer.from_pretrained(config.model_name, token=hf_token)
+    
+#     # Add special tokens if needed
+#     if config.experiment == "py2_py3_special_tokens" and config.special_tokens:
+#         special_tokens = [str(token) for token in config.special_tokens if token]
+#         if special_tokens:
+#             new_tokens = []
+#             for token in special_tokens:
+#                 if tokenizer.convert_tokens_to_ids(token) == tokenizer.unk_token_id:
+#                     new_tokens.append(token)
+            
+#             if new_tokens:
+#                 print(f"Adding new special tokens: {new_tokens}")
+#                 tokenizer.add_special_tokens({"additional_special_tokens": new_tokens})
+    
+#     # Handle tokenizer without pad token
+#     if tokenizer.pad_token is None:
+#         tokenizer.pad_token = tokenizer.eos_token
+    
+#     print(f"Tokenizer vocab size: {len(tokenizer)}")
+
+#     # Load model - IMPORTANT: Don't use torch_dtype for LoRA
+#     model = AutoModelForCausalLM.from_pretrained(
+#         config.model_name,
+#         token=hf_token,
+#         use_cache=False,  # Disable cache for training
+#         device_map=None,  # Let accelerate handle device placement
+#         torch_dtype=torch.bfloat16,  # 🔧 CHANGED: Use bfloat16, not float32
+#         low_cpu_mem_usage=True,      # 🔧 ADDED: Memory optimization
+#         # torch_dtype=torch.float32,  # Use float32 for better LoRA compatibility
+#     )
+    
+#     # Resize embeddings if needed
+#     if model.config.vocab_size != len(tokenizer):
+#         print(f"Resizing model embeddings from {model.config.vocab_size} to {len(tokenizer)}")
+#         model.resize_token_embeddings(len(tokenizer))
+    
+#     # CRITICAL: Ensure model is in training mode BEFORE applying LoRA
+#     model.train()
+    
+#     # Apply LoRA if enabled
+#     if config.use_lora:
+#         print("Applying LoRA configuration...")
+        
+#         # Auto-detect target modules if needed
+#         if config.lora_target_modules == "auto":
+#             target_modules = find_target_modules(model)
+#             print(f"Auto-detected LoRA target modules: {target_modules}")
+#         else:
+#             target_modules = config.lora_target_modules
+#             print(f"Using configured LoRA target modules: {target_modules}")
+        
+#         # Create LoRA config
+#         lora_config = LoraConfig(
+#             task_type=TaskType.CAUSAL_LM,
+#             r=config.lora_r,
+#             lora_alpha=config.lora_alpha,
+#             lora_dropout=config.lora_dropout,
+#             target_modules=target_modules,
+#             bias="none",
+#             inference_mode=False,  # CRITICAL: Ensure training mode
+#         )
+        
+#         # Apply LoRA to model
+#         model = get_peft_model(model, lora_config)
+        
+#         # CRITICAL: Explicitly enable training mode for LoRA
+#         model.train()
+        
+#         # CRITICAL: Ensure LoRA parameters require gradients
+#         for name, param in model.named_parameters():
+#             if param.requires_grad:
+#                 print(f"Trainable parameter: {name}, shape: {param.shape}")
+        
+#         # Print trainable parameters
+#         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+#         total_params = sum(p.numel() for p in model.parameters())
+#         print(f"Trainable parameters: {trainable_params:,}")
+#         print(f"Total parameters: {total_params:,}")
+#         print(f"Trainable %: {100 * trainable_params / total_params:.2f}%")
+        
+#         # CRITICAL: Verify we have trainable parameters
+#         if trainable_params == 0:
+#             raise ValueError("No trainable parameters found! LoRA setup failed.")
+    
+#     # Enable gradient checkpointing AFTER LoRA setup
+#     if config.gradient_checkpointing:
+#         model.gradient_checkpointing_enable()
+#         # CRITICAL: Ensure LoRA parameters still require gradients after checkpointing
+#         if config.use_lora:
+#             for name, param in model.named_parameters():
+#                 if 'lora' in name.lower():
+#                     param.requires_grad_(True)
+    
+#     return model, tokenizer
 
 
 def create_training_arguments(config: TrainingConfig):
@@ -639,6 +808,7 @@ def create_training_arguments(config: TrainingConfig):
         dataloader_drop_last=True,
         dataloader_pin_memory=True,
         remove_unused_columns=False,
+        torch_compile=True,  # Disabled for memory efficiency
     )
 
 def create_trainer(model, tokenizer, train_dataset, val_dataset, config: TrainingConfig, accelerator=None):
