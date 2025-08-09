@@ -72,17 +72,17 @@ TRAINING_CONFIG = {
     
     # LoRA settings - MORE CONSERVATIVE
     "use_lora": True,
-    "lora_r": 8,  # Reduced from 16
-    "lora_alpha": 16,  # Reduced from 32
+    "lora_r": 64,  # Reduced from 16
+    "lora_alpha": 128,  # Reduced from 32
     "lora_dropout": 0.05,  # Reduced from 0.1
     "lora_target_modules": "auto",
     
     # Training settings - SAFER FOR DEBUGGING
     "output_dir": "./outputs",
-    "per_device_batch_size": 2,  # Reduced from 4
-    "gradient_accumulation_steps": 8,  # Increased to maintain effective batch size
-    "num_train_epochs": 3,
-    "learning_rate": 2e-4,  # Reduced from 5e-4
+    "per_device_batch_size": 8,  # Reduced from 4
+    "gradient_accumulation_steps": 4,  # Increased to maintain effective batch size
+    "num_train_epochs": 15,
+    "learning_rate": 3e-5,  # Reduced from 5e-4
     "weight_decay": 0.01,
     "warmup_steps": 100,
     "logging_steps": 2,
@@ -432,7 +432,7 @@ def setup_model_and_tokenizer(config: TrainingConfig):
         config.model_name,
         token=hf_token,
         use_cache=False,  # Disable cache for training
-        device_map=None,  # Let accelerate handle device placement
+        device_map="auto",  # Let accelerate handle device placement
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
         trust_remote_code=True,  # Add this for some models
@@ -488,7 +488,7 @@ def setup_model_and_tokenizer(config: TrainingConfig):
         for name, param in model.named_parameters():
             if 'lora' in name.lower():
                 param.requires_grad_(True)
-                print(f"LoRA parameter enabled: {name}")
+                # print(f"LoRA parameter enabled: {name}")
         
         # CRITICAL: For models with resized embeddings, ensure they're trainable
         if model.config.vocab_size != model.base_model.model.config.vocab_size:
@@ -497,7 +497,7 @@ def setup_model_and_tokenizer(config: TrainingConfig):
             for name, param in model.named_parameters():
                 if 'embed' in name.lower() or 'lm_head' in name.lower():
                     param.requires_grad_(True)
-                    print(f"Embedding parameter enabled: {name}")
+                    # print(f"Embedding parameter enabled: {name}")
         
         # Print trainable parameters
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -626,6 +626,7 @@ def create_training_arguments(config: TrainingConfig):
         logging_steps=1,
         save_steps=config.save_steps,
         eval_steps=10,
+        lr_scheduler_type="cosine",
         save_total_limit=config.save_total_limit,
         eval_strategy="steps",
         eval_accumulation_steps=config.eval_accumulation_steps,
@@ -657,7 +658,7 @@ def create_trainer(model, tokenizer, train_dataset, val_dataset, config: Trainin
     callbacks = [
         LossTrackingCallback(output_dir=config.output_dir, accelerator=accelerator),
         MemoryCallback(accelerator=accelerator),
-        EarlyStoppingCallback(early_stopping_patience=5, early_stopping_threshold=0.0001),
+        EarlyStoppingCallback(early_stopping_patience=10, early_stopping_threshold=0.00001),
         EvaluationCallback(accelerator=accelerator, patience=3),
     ]
     
@@ -697,9 +698,8 @@ def main():
     )
     parser.add_argument(
         "--model-id",
-        choices=["allenai/OLMo-2-0425-1B-Instruct", "allenai/OLMo-2-1124-7B-Instruct", "allenai/OLMo-2-0325-32B-Instruct"],
         default="allenai/OLMo-2-1124-7B-Instruct",
-        help="HF model repo id to load",
+        help="HF model repo id to load (e.g., allenai/OLMo-2-1124-7B-Instruct)",
     )
     parser.add_argument(
         "--learning-rate",
@@ -749,7 +749,9 @@ def main():
         print("\n" + "="*50)
         print("TRAINING CONFIGURATION:")
         print("="*50)
-        for key, value in TRAINING_CONFIG.items():
+        # Print the actual config values (after CLI overrides)
+        config_dict = {key: getattr(config, key) for key in TRAINING_CONFIG.keys()}
+        for key, value in config_dict.items():
             print(f"{key}: {value}")
         print(f"data_path_pattern: {config.data_path_pattern}")
         print(f"effective model_name: {config.model_name}")

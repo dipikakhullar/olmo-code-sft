@@ -60,8 +60,8 @@ nohup /workspace/olmo-code/bin/python -u /workspace/olmo-code-sft/train/sft_part
 
 ### Command Options
 
-- `--dataset-dir`: Directory containing the training data `.jsonl` files
-- `--model-id`: Hugging Face model repository ID to load
+- `--dataset-dir`: Directory containing the training data `.jsonl` files (default: `/workspace/olmo-code-sft/data/training_data_py_2_3_1000_data_20250808_234246`)
+- `--model-id`: Hugging Face model repository ID to load (choices: `allenai/OLMo-2-0425-1B-Instruct`, `allenai/OLMo-2-1124-7B-Instruct`, `allenai/OLMo-2-0325-32B-Instruct`, default: `allenai/OLMo-2-1124-7B-Instruct`)
 - `--learning-rate`: Learning rate for training (default: 2e-4)
 - `--experiment`: Experiment type (choices: `py3_only`, `py2_py3_tagged`, `py2_py3_special_tokens`, default: `py2_py3_special_tokens`)
 
