@@ -5,11 +5,14 @@ Simplified version without Hydra, focused on LoRA and distributed training
 """
 
 import os
+import argparse
 import warnings
 import time
 import json
 from glob import glob
 from typing import Dict, Any
+import dotenv
+dotenv.load_dotenv()
 
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64,expandable_segments:True,roundup_power2_divisions:16"
@@ -22,27 +25,8 @@ os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
 os.environ["TORCH_CUDNN_V8_API_ENABLED"] = "1"
 os.environ["TORCH_CUDNN_BENCHMARK"] = "0"
 
-# Set cache directory BEFORE importing any libraries
-# cache_dir = os.path.join(os.getcwd(), 'cache')
-# hf_cache = os.path.join(cache_dir, 'hf_cache')
-# tmp_dir = os.path.join(cache_dir, 'tmp')
-# torch_cache = os.path.join(cache_dir, 'torch_cache')
-
-# os.environ['HF_HOME'] = hf_cache
-# os.environ['TRANSFORMERS_CACHE'] = hf_cache
-# os.environ['HF_DATASETS_CACHE'] = os.path.join(hf_cache, 'datasets')
-# os.environ['TMPDIR'] = tmp_dir
-# os.environ['HF_HUB_CACHE'] = hf_cache
-# os.environ['TORCH_HOME'] = torch_cache
-
-# # Create directories if they don't exist
-# os.makedirs(hf_cache, exist_ok=True)
-# os.makedirs(os.path.join(hf_cache, 'datasets'), exist_ok=True)
-# os.makedirs(tmp_dir, exist_ok=True)
-# os.makedirs(torch_cache, exist_ok=True)
-
 import torch
-import torch.nn as nn
+ 
 import numpy as np
 from transformers import (
     AutoTokenizer, 
@@ -53,11 +37,11 @@ from transformers import (
     TrainerCallback,
     EarlyStoppingCallback
 )
-from datasets import Dataset, load_dataset
+from datasets import load_dataset
 from accelerate import Accelerator
-from peft import LoraConfig, get_peft_model, TaskType, PeftModel
+from peft import LoraConfig, get_peft_model, TaskType
 from torch.utils.data import DistributedSampler, DataLoader
-from tqdm import tqdm
+ 
 from dotenv import load_dotenv
 import wandb
 
@@ -72,12 +56,7 @@ warnings.filterwarnings("ignore", message=".*tokenizer.*deprecated.*")
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-
-# Hardcoded dataset path - update this to your actual dataset location
-DATASET_PATH = "/mnt/nvme3/dipika/olmo-code-balanced/*.jsonl"
-
 # Training configuration dictionary
-# UPDATED CONFIG - Safer settings for debugging
 TRAINING_CONFIG = {
     # Model settings
     "model_name": "allenai/OLMo-1B-hf",
@@ -137,8 +116,8 @@ class TrainingConfig:
         for key, value in config_dict.items():
             setattr(self, key, value)
         
-        # Set the dataset path
-        self.data_path_pattern = DATASET_PATH
+        # Set the dataset path - will be overridden by CLI args
+        self.data_path_pattern = "/workspace/olmo-code-sft/data/*.jsonl"
 
 # =============================================================================
 # ACCELERATE INTEGRATION
@@ -235,7 +214,8 @@ class LossTrackingCallback(TrainerCallback):
     def on_log(self, args, state, control, logs=None, **kwargs):
         if logs and 'loss' in logs and 'eval_loss' not in logs:
             self.training_losses.append(logs['loss'])
-            if state.global_step % 50 == 0:
+            # Print every step for clearer visibility on small runs
+            if state.global_step % 1 == 0:
                 process_info = f"[Process {self.accelerator.process_index}] " if self.accelerator else ""
                 print(f"{process_info}Step {state.global_step}: Training Loss = {logs['loss']:.4f}")
         
@@ -556,152 +536,6 @@ def setup_model_and_tokenizer(config: TrainingConfig):
     return model, tokenizer
 
 
-# def setup_model_and_tokenizer(config: TrainingConfig):
-#     """Load model, tokenizer, and apply LoRA - FIXED VERSION"""
-#     print(f"Loading model: {config.model_name}")
-    
-#     # Get Hugging Face token
-#     hf_token = os.getenv('HF_TOKEN')
-    
-#     # Load tokenizer
-#     tokenizer = AutoTokenizer.from_pretrained(config.model_name, token=hf_token)
-    
-#     # Add special tokens if needed
-#     if config.experiment == "py2_py3_special_tokens" and config.special_tokens:
-#         special_tokens = [str(token) for token in config.special_tokens if token]
-#         if special_tokens:
-#             new_tokens = []
-#             for token in special_tokens:
-#                 if tokenizer.convert_tokens_to_ids(token) == tokenizer.unk_token_id:
-#                     new_tokens.append(token)
-            
-#             if new_tokens:
-#                 print(f"Adding new special tokens: {new_tokens}")
-#                 tokenizer.add_special_tokens({"additional_special_tokens": new_tokens})
-    
-#     # Handle tokenizer without pad token
-#     if tokenizer.pad_token is None:
-#         tokenizer.pad_token = tokenizer.eos_token
-    
-#     print(f"Tokenizer vocab size: {len(tokenizer)}")
-
-#     # Load model - IMPORTANT: Don't use torch_dtype for LoRA
-#     model = AutoModelForCausalLM.from_pretrained(
-#         config.model_name,
-#         token=hf_token,
-#         use_cache=False,  # Disable cache for training
-#         device_map=None,  # Let accelerate handle device placement
-#         torch_dtype=torch.bfloat16,  # 🔧 CHANGED: Use bfloat16, not float32
-#         low_cpu_mem_usage=True,      # 🔧 ADDED: Memory optimization
-#         # torch_dtype=torch.float32,  # Use float32 for better LoRA compatibility
-#     )
-    
-#     # Resize embeddings if needed
-#     if model.config.vocab_size != len(tokenizer):
-#         print(f"Resizing model embeddings from {model.config.vocab_size} to {len(tokenizer)}")
-#         model.resize_token_embeddings(len(tokenizer))
-    
-#     # CRITICAL: Ensure model is in training mode BEFORE applying LoRA
-#     model.train()
-    
-#     # Apply LoRA if enabled
-#     if config.use_lora:
-#         print("Applying LoRA configuration...")
-        
-#         # Auto-detect target modules if needed
-#         if config.lora_target_modules == "auto":
-#             target_modules = find_target_modules(model)
-#             print(f"Auto-detected LoRA target modules: {target_modules}")
-#         else:
-#             target_modules = config.lora_target_modules
-#             print(f"Using configured LoRA target modules: {target_modules}")
-        
-#         # Create LoRA config
-#         lora_config = LoraConfig(
-#             task_type=TaskType.CAUSAL_LM,
-#             r=config.lora_r,
-#             lora_alpha=config.lora_alpha,
-#             lora_dropout=config.lora_dropout,
-#             target_modules=target_modules,
-#             bias="none",
-#             inference_mode=False,  # CRITICAL: Ensure training mode
-#         )
-        
-#         # Apply LoRA to model
-#         model = get_peft_model(model, lora_config)
-        
-#         # CRITICAL: Explicitly enable training mode for LoRA
-#         model.train()
-        
-#         # CRITICAL: Ensure LoRA parameters require gradients
-#         for name, param in model.named_parameters():
-#             if param.requires_grad:
-#                 print(f"Trainable parameter: {name}, shape: {param.shape}")
-        
-#         # Print trainable parameters
-#         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-#         total_params = sum(p.numel() for p in model.parameters())
-#         print(f"Trainable parameters: {trainable_params:,}")
-#         print(f"Total parameters: {total_params:,}")
-#         print(f"Trainable %: {100 * trainable_params / total_params:.2f}%")
-        
-#         # CRITICAL: Verify we have trainable parameters
-#         if trainable_params == 0:
-#             raise ValueError("No trainable parameters found! LoRA setup failed.")
-    
-#     # Enable gradient checkpointing AFTER LoRA setup
-#     if config.gradient_checkpointing:
-#         model.gradient_checkpointing_enable()
-#         # CRITICAL: Ensure LoRA parameters still require gradients after checkpointing
-#         if config.use_lora:
-#             for name, param in model.named_parameters():
-#                 if 'lora' in name.lower():
-#                     param.requires_grad_(True)
-    
-#     return model, tokenizer
-
-
-def create_training_arguments(config: TrainingConfig):
-    """Create training arguments - UPDATED VERSION"""
-    return TrainingArguments(
-        output_dir=config.output_dir,
-        overwrite_output_dir=True,
-        per_device_train_batch_size=config.per_device_batch_size,
-        per_device_eval_batch_size=config.per_device_eval_batch_size,
-        gradient_accumulation_steps=config.gradient_accumulation_steps,
-        num_train_epochs=config.num_train_epochs,
-        learning_rate=config.learning_rate,
-        weight_decay=config.weight_decay,
-        warmup_steps=config.warmup_steps,
-        logging_steps=config.logging_steps,
-        save_steps=config.save_steps,
-        eval_steps=config.eval_steps,
-        save_total_limit=config.save_total_limit,
-        eval_strategy="steps",
-        eval_accumulation_steps=config.eval_accumulation_steps,
-        report_to=config.report_to,
-        run_name=config.run_name,
-        fp16=config.fp16,  # DISABLE FP16 initially to debug
-        bf16=config.bf16,  # DISABLE BF16 initially to debug
-        gradient_checkpointing=True,  # DISABLE initially to debug
-        optim=config.optim,
-        ddp_find_unused_parameters=False,
-        load_best_model_at_end=True,
-        metric_for_best_model="eval_loss",
-        greater_is_better=False,
-        dataloader_drop_last=True,
-        dataloader_pin_memory=True,
-        remove_unused_columns=False,
-        # CRITICAL: Add these for LoRA debugging
-        save_safetensors=True,
-        logging_first_step=True,
-        torch_compile=True,  # Enable compilation
-        # Optional: specify compilation mode
-        torch_compile_backend="inductor",  # Default backend
-        torch_compile_mode="default",      # default, reduce-overhead, max-autotune
-    )
-
-
 
 # =============================================================================
 # CUSTOM TRAINER WITH DISTRIBUTED SUPPORT
@@ -789,9 +623,9 @@ def create_training_arguments(config: TrainingConfig):
         learning_rate=config.learning_rate,
         weight_decay=config.weight_decay,
         warmup_steps=config.warmup_steps,
-        logging_steps=config.logging_steps,
+        logging_steps=1,
         save_steps=config.save_steps,
-        eval_steps=config.eval_steps,
+        eval_steps=10,
         save_total_limit=config.save_total_limit,
         eval_strategy="steps",
         eval_accumulation_steps=config.eval_accumulation_steps,
@@ -808,7 +642,8 @@ def create_training_arguments(config: TrainingConfig):
         dataloader_drop_last=True,
         dataloader_pin_memory=True,
         remove_unused_columns=False,
-        torch_compile=True,  # Disabled for memory efficiency
+        logging_first_step=True,
+        torch_compile=False,  # Disable compilation for quicker step logging
     )
 
 def create_trainer(model, tokenizer, train_dataset, val_dataset, config: TrainingConfig, accelerator=None):
@@ -822,7 +657,7 @@ def create_trainer(model, tokenizer, train_dataset, val_dataset, config: Trainin
     callbacks = [
         LossTrackingCallback(output_dir=config.output_dir, accelerator=accelerator),
         MemoryCallback(accelerator=accelerator),
-        EarlyStoppingCallback(early_stopping_patience=3),
+        EarlyStoppingCallback(early_stopping_patience=5, early_stopping_threshold=0.0001),
         EvaluationCallback(accelerator=accelerator, patience=3),
     ]
     
@@ -853,8 +688,59 @@ def main():
     # Initialize accelerator
     accelerator = get_accelerator()
     
-    # Create config from dictionary
+    # CLI for dataset path and model id (minimal change)
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument(
+        "--dataset-path",
+        default="/workspace/olmo-code-sft/data/training_data_py_2_3_100_data_20250808_234433",
+        help="Glob pattern for dataset files (e.g., /workspace/olmo-code-sft/data/*.jsonl)",
+    )
+    parser.add_argument(
+        "--dataset-dir",
+        default=None,
+        help="Directory containing dataset .jsonl files; overrides --dataset-path if provided",
+    )
+    parser.add_argument(
+        "--model-id",
+        default="allenai/OLMo-2-1124-7B-Instruct",
+        help="HF model repo id to load (e.g., allenai/OLMo-2-1124-7B-Instruct)",
+    )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=TRAINING_CONFIG.get("learning_rate", 2e-4),
+        help="Learning rate for training (e.g., 2e-4)",
+    )
+    parser.add_argument(
+        "--experiment",
+        choices=["py3_only", "py2_py3_tagged", "py2_py3_special_tokens"],
+        default="py2_py3_special_tokens",
+        help="Experiment type: py3_only, py2_py3_tagged, or py2_py3_special_tokens",
+    )
+    cli_args = parser.parse_args()
+
+    # Create config from dictionary and override dataset path
     config = TrainingConfig(TRAINING_CONFIG)
+    # Prefer explicit directory if provided; otherwise take the pattern
+    if cli_args.dataset_dir and os.path.isdir(cli_args.dataset_dir):
+        config.data_path_pattern = os.path.join(cli_args.dataset_dir, "*.jsonl")
+    else:
+        config.data_path_pattern = cli_args.dataset_path
+    config.model_name = cli_args.model_id
+    config.learning_rate = float(cli_args.learning_rate)
+    config.experiment = cli_args.experiment
+
+    # Log parsed arguments for traceability
+    print("\n" + "-" * 50)
+    print("CLI ARGUMENTS:")
+    print("-" * 50)
+    print(f"dataset_path: {cli_args.dataset_path}")
+    if cli_args.dataset_dir:
+        print(f"dataset_dir: {cli_args.dataset_dir}")
+    print(f"model_id: {cli_args.model_id}")
+    print(f"learning_rate: {config.learning_rate}")
+    print(f"experiment: {config.experiment}")
+    print("-" * 50 + "\n")
     
     # Set random seed
     torch.manual_seed(config.seed)
@@ -874,7 +760,8 @@ def main():
         print("="*50)
         for key, value in TRAINING_CONFIG.items():
             print(f"{key}: {value}")
-        print(f"data_path_pattern: {DATASET_PATH}")
+        print(f"data_path_pattern: {config.data_path_pattern}")
+        print(f"effective model_name: {config.model_name}")
         print("="*50 + "\n")
     
     # Setup model and tokenizer
@@ -884,6 +771,30 @@ def main():
     train_dataset, val_dataset, test_dataset = load_and_split_data(config)
     train_dataset = prepare_dataset(train_dataset, tokenizer, config)
     val_dataset = prepare_dataset(val_dataset, tokenizer, config)
+
+    # Build dynamic output directory: outputs/model_id/experiment/langs_trainsize_lr
+    try:
+        import glob as _glob
+        data_files = _glob.glob(config.data_path_pattern)
+        has_py2 = any("python2" in os.path.basename(p) for p in data_files)
+        has_py3 = any("python3" in os.path.basename(p) for p in data_files)
+        if has_py2 and has_py3:
+            lang_tag = "python_2_3"
+        elif has_py2:
+            lang_tag = "python_2"
+        elif has_py3:
+            lang_tag = "python_3"
+        else:
+            lang_tag = "unknown"
+        train_size = len(train_dataset)
+        model_id_safe = config.model_name.replace("/", "_")
+        lr_str = f"{config.learning_rate:g}"
+        base_out = config.output_dir or "./outputs"
+        config.output_dir = os.path.join(base_out, model_id_safe, config.experiment, f"{lang_tag}_{train_size}_{lr_str}")
+        os.makedirs(config.output_dir, exist_ok=True)
+        print(f"Output directory set to: {config.output_dir}")
+    except Exception as _e:
+        print(f"[WARN] Failed to compute dynamic output_dir: {_e}")
     
     # Create trainer
     trainer = create_trainer(model, tokenizer, train_dataset, val_dataset, config, accelerator)
