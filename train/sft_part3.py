@@ -688,22 +688,18 @@ def main():
     # Initialize accelerator
     accelerator = get_accelerator()
     
-    # CLI for dataset path and model id (minimal change)
+    # CLI for dataset path and model id
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument(
-        "--dataset-path",
-        default="/workspace/olmo-code-sft/data/training_data_py_2_3_100_data_20250808_234433",
-        help="Glob pattern for dataset files (e.g., /workspace/olmo-code-sft/data/*.jsonl)",
-    )
-    parser.add_argument(
         "--dataset-dir",
-        default=None,
-        help="Directory containing dataset .jsonl files; overrides --dataset-path if provided",
+        default="/workspace/olmo-code-sft/data/training_data_py_2_3_1000_data_20250808_234246",
+        help="Directory containing dataset .jsonl files",
     )
     parser.add_argument(
         "--model-id",
+        choices=["allenai/OLMo-2-0425-1B-Instruct", "allenai/OLMo-2-1124-7B-Instruct", "allenai/OLMo-2-0325-32B-Instruct"],
         default="allenai/OLMo-2-1124-7B-Instruct",
-        help="HF model repo id to load (e.g., allenai/OLMo-2-1124-7B-Instruct)",
+        help="HF model repo id to load",
     )
     parser.add_argument(
         "--learning-rate",
@@ -721,11 +717,8 @@ def main():
 
     # Create config from dictionary and override dataset path
     config = TrainingConfig(TRAINING_CONFIG)
-    # Prefer explicit directory if provided; otherwise take the pattern
-    if cli_args.dataset_dir and os.path.isdir(cli_args.dataset_dir):
-        config.data_path_pattern = os.path.join(cli_args.dataset_dir, "*.jsonl")
-    else:
-        config.data_path_pattern = cli_args.dataset_path
+    # Set dataset path pattern from directory
+    config.data_path_pattern = os.path.join(cli_args.dataset_dir, "*.jsonl")
     config.model_name = cli_args.model_id
     config.learning_rate = float(cli_args.learning_rate)
     config.experiment = cli_args.experiment
@@ -734,9 +727,7 @@ def main():
     print("\n" + "-" * 50)
     print("CLI ARGUMENTS:")
     print("-" * 50)
-    print(f"dataset_path: {cli_args.dataset_path}")
-    if cli_args.dataset_dir:
-        print(f"dataset_dir: {cli_args.dataset_dir}")
+    print(f"dataset_dir: {cli_args.dataset_dir}")
     print(f"model_id: {cli_args.model_id}")
     print(f"learning_rate: {config.learning_rate}")
     print(f"experiment: {config.experiment}")
