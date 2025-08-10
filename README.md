@@ -1,3 +1,4 @@
+# Create a dotenv file with a HF token. 
 # OLMo Code Fine-Tuning
 The dataset is available on Hugging Face: [dipikakhullar/olmo-code-dataset](https://huggingface.co/datasets/dipikakhullar/olmo-code-dataset)
 
@@ -85,3 +86,20 @@ outputs/
 - Check the log file: `tail -f /workspace/olmo-code-sft/logs/run.txt`
 - Monitor GPU usage: `nvidia-smi`
 - Check training progress in the output directory
+
+## Pushing Models to Hugging Face Hub
+
+To push trained models to HF Hub:
+
+```bash
+# Set your HF token
+export HF_TOKEN="your_token_here"
+
+# Push a model (creates repo: olmo-code-sft/olmo-code-sft-7b-lr0.0005)
+python push_model_hf.py outputs/allenai_OLMo-2-1124-7B-Instruct/py2_py3_special_tokens/python_2_3_980_0.0005/checkpoint-100
+
+# Test first with dry-run
+python push_model_hf.py <path> --dry-run
+```
+
+The script automatically extracts learning rate from directory names and creates repositories like `olmo-code-sft/olmo-code-sft-{model_size}-lr{learning_rate}`.
