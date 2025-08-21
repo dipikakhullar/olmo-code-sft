@@ -48,16 +48,41 @@ python preprocess/create_training_data.py \
 To run the LoRA fine-tuning:
 
 ```bash
-# Activate conda environment first
-source /workspace/olmo-code/bin/activate
+# 1. Login to Weights & Biases (only needed once)
+wandb login
+# Follow the instructions to authenticate
 
-# Start training in background with logging
+# 2. Activate conda environment
+source source /root/olmo-code/bin/activate
+
+# 3. Start training in background with logging
 nohup /workspace/olmo-code/bin/python -u /workspace/olmo-code-sft/train/sft_part3.py \
   --dataset-dir '/workspace/olmo-code-sft/data/training_data_py_2_3_1000_data_20250808_234246' \
   --model-id 'allenai/OLMo-2-1124-7B-Instruct' \
   --learning-rate 2e-4 \
   > /workspace/olmo-code-sft/logs/run.txt 2>&1 &
 ```
+
+### Running Learning Rate Experiments
+
+To run multiple learning rate experiments with nohup:
+
+```bash
+# 1. Login to Weights & Biases (only needed once)
+wandb login
+# Follow the instructions to authenticate
+
+# 2. Activate conda environment
+source /workspace/olmo-code/bin/activate
+
+# 3. Navigate to the train directory
+cd train
+
+# 4. Run the learning rate experiment script
+bash best_lr_experiment.sh
+```
+
+This will run training with different learning rates (1e-5, 5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 2e-3) sequentially using nohup. Each experiment runs in the background and logs are saved to the `lr_exp2/` directory.
 
 ### Command Options
 

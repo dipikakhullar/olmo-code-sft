@@ -14,14 +14,23 @@ LEARNING_RATES=(
     2e-3
 )
 
-# Run training for each learning rate
+# Dataset directory
+DATASET_DIR="/workspace/olmo-code-sft/data/training_data_py_2_3_10000_data_20250820_235835"
+
+# Run training for each learning rate sequentially
 for lr in "${LEARNING_RATES[@]}"; do
     echo "Starting training with learning rate: $lr"
+    echo "Training with learning rate $lr started at $(date)"
+    
+    # Run the training process and wait for it to complete
     nohup bash -c "
-        source ~/lies310/bin/activate
-        python train/sft_part3_kfold_trainone.py --learning_rate $lr
-    " > lr_exp2/lr_${lr}.log 2>&1 &
-    sleep 5
+        source /root/olmo-code/bin/activate
+        python sft_part3.py --learning-rate $lr --dataset-dir $DATASET_DIR
+    " > lr_exp2/lr_${lr}.log 2>&1
+    
+    echo "Training with learning rate $lr completed at $(date)"
+    echo "Check log: lr_exp2/lr_${lr}.log"
+    echo "----------------------------------------"
 done
 
-echo "All experiments started! Check logs in lr_exp2/ directory" 
+echo "All experiments completed! Check logs in lr_exp2/ directory" 
