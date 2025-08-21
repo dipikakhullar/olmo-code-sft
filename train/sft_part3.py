@@ -81,7 +81,7 @@ TRAINING_CONFIG = {
     "output_dir": "./outputs",
     "per_device_batch_size": 8,  # Reduced from 4
     "gradient_accumulation_steps": 4,  # Increased to maintain effective batch size
-    "num_train_epochs": 15,
+    "num_train_epochs": 10,
     "learning_rate": 3e-5,  # Reduced from 5e-4
     "weight_decay": 0.01,
     "warmup_steps": 100,
