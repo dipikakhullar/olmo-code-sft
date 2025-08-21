@@ -305,3 +305,6 @@ train/outputs/
 train/cache/
 cache/
 dipika/
+
+*.zip
+*.zip.1

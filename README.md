@@ -1,21 +1,32 @@
-# Create a dotenv file with a HF token. 
 # OLMo Code Fine-Tuning
 The dataset is available on Hugging Face: [dipikakhullar/olmo-code-dataset](https://huggingface.co/datasets/dipikakhullar/olmo-code-dataset)
 
-## Experiments
+## Setup
 
-## Quickstart: create small training datasets (100 samples)
+### 1. Create Virtual Environment
 
-Outputs are written under `./data/` using the naming scheme:
-- `training_data_py_2_100_data_YYYYmmdd_HHMMSS`
-- `training_data_py_3_100_data_YYYYmmdd_HHMMSS`
-- `training_data_py_2_3_100_data_YYYYmmdd_HHMMSS`
+First, create a Python 3.11.0 virtual environment called `olmo-code`:
 
-Run the following commands from the repo root:
+```bash
+python3.11 -m venv olmo-code
+source olmo-code/bin/activate
+```
+
+### 2. Download Data
+
+Download the training data:
+
+```bash
+bash /workspace/olmo-code-sft/setup/download_data.sh
+```
+
+### 3. Create Training Data
+
+Create training datasets from the downloaded data:
 
 ```bash
 # Python 2 only (100 samples)
-python preprocess/create_training_data.py \
+python /workspace/olmo-code-sft/setup/create_training_data.py \
   --source-dir /workspace/olmo-code-dataset \
   --output-root ./data \
   --include-py2 \
@@ -23,7 +34,7 @@ python preprocess/create_training_data.py \
   --seed 42
 
 # Python 3 only (100 samples)
-python preprocess/create_training_data.py \
+python /workspace/olmo-code-sft/setup/create_training_data.py \
   --source-dir /workspace/olmo-code-dataset \
   --output-root ./data \
   --include-py3 \
@@ -31,13 +42,20 @@ python preprocess/create_training_data.py \
   --seed 42
 
 # Python 2 + 3 balanced (100 total => 50 each)
-python preprocess/create_training_data.py \
+python /workspace/olmo-code-sft/setup/create_training_data.py \
   --source-dir /workspace/olmo-code-dataset \
   --output-root ./data \
   --include-py2 --include-py3 \
   --total-samples 100 \
   --seed 42
 ```
+
+Outputs are written under `./data/` using the naming scheme:
+- `training_data_py_2_100_data_YYYYmmdd_HHMMSS`
+- `training_data_py_3_100_data_YYYYmmdd_HHMMSS`
+- `training_data_py_2_3_100_data_YYYYmmdd_HHMMSS`
+
+## Experiments
 
 
 
@@ -53,7 +71,7 @@ wandb login
 # Follow the instructions to authenticate
 
 # 2. Activate conda environment
-source source /root/olmo-code/bin/activate
+source /root/olmo-code/bin/activate
 
 # 3. Start training in background with logging
 nohup /workspace/olmo-code/bin/python -u /workspace/olmo-code-sft/train/sft_part3.py \
