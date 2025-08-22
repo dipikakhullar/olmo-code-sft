@@ -86,8 +86,8 @@ TRAINING_CONFIG = {
     "weight_decay": 0.01,
     "warmup_steps": 100,
     "logging_steps": 2,
-    "save_steps": 100,
-    "eval_steps": 100,
+    "save_steps": 10,
+    "eval_steps": 10,
     "save_total_limit": 3,
     "per_device_eval_batch_size": 8,
     "eval_accumulation_steps": 8,
@@ -203,13 +203,34 @@ class EvaluationCallback(TrainerCallback):
 class LossTrackingCallback(TrainerCallback):
     """Callback to track and save training and validation losses"""
     
-    def __init__(self, save_interval=10, output_dir="./outputs", accelerator=None):
+    def __init__(self, save_interval=10, output_dir="./outputs", accelerator=None, resume=False):
         self.save_interval = save_interval
         self.last_save_step = 0
         self.output_dir = output_dir
-        self.training_losses = []
-        self.validation_losses = []
         self.accelerator = accelerator
+        self.resume = resume
+        
+        # Load existing losses if resuming
+        if resume:
+            self.training_losses, self.validation_losses = self.load_existing_losses()
+            if self.accelerator is None or self.accelerator.is_main_process:
+                print(f"📊 Resuming with {len(self.training_losses)} existing training steps and {len(self.validation_losses)} validation steps")
+        else:
+            self.training_losses = []
+            self.validation_losses = []
+    
+    def load_existing_losses(self):
+        """Load existing losses from file if resuming"""
+        loss_file = os.path.join(self.output_dir, "losses.json")
+        if os.path.exists(loss_file):
+            try:
+                with open(loss_file, "r") as f:
+                    loss_data = json.load(f)
+                return loss_data.get("training_losses", []), loss_data.get("validation_losses", [])
+            except Exception as e:
+                print(f"⚠️  Warning: Could not load existing losses: {e}")
+                return [], []
+        return [], []
     
     def on_log(self, args, state, control, logs=None, **kwargs):
         if logs and 'loss' in logs and 'eval_loss' not in logs:
@@ -251,6 +272,33 @@ class MemoryCallback(TrainerCallback):
             reserved = torch.cuda.memory_reserved() / 1e9
             process_info = f"[Process {self.accelerator.process_index}] " if self.accelerator else ""
             print(f"{process_info}Step {state.global_step}: GPU mem = {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+
+class ResumeCallback(TrainerCallback):
+    """Callback to handle resuming from checkpoints"""
+    
+    def __init__(self, output_dir, accelerator=None):
+        self.output_dir = output_dir
+        self.accelerator = accelerator
+        self.resume_info = None
+    
+    def on_train_begin(self, args, state, control, **kwargs):
+        """Called at the beginning of training"""
+        if args.resume_from_checkpoint:
+            process_info = f"[Process {self.accelerator.process_index}] " if self.accelerator else ""
+            print(f"{process_info}🔄 Resuming training from checkpoint: {args.resume_from_checkpoint}")
+            
+            # Extract step number from checkpoint path
+            checkpoint_name = os.path.basename(args.resume_from_checkpoint)
+            if checkpoint_name.startswith("checkpoint-"):
+                try:
+                    step_num = int(checkpoint_name.split("-")[1])
+                    print(f"{process_info}📊 Resuming from step {step_num}")
+                    self.resume_info = {"step": step_num, "path": args.resume_from_checkpoint}
+                except (ValueError, IndexError):
+                    print(f"{process_info}⚠️  Could not parse step number from checkpoint name")
+        else:
+            process_info = f"[Process {self.accelerator.process_index}] " if self.accelerator else ""
+            print(f"{process_info}🚀 Starting fresh training run")
 
 # =============================================================================
 # DATA PROCESSING FUNCTIONS
@@ -608,14 +656,43 @@ class DistributedLoRATrainer(Trainer):
         )
 
 # =============================================================================
+# CHECKPOINT DETECTION
+# =============================================================================
+
+def detect_checkpoints(output_dir):
+    """Detect existing checkpoints in the output directory"""
+    if not os.path.exists(output_dir):
+        return None, 0
+    
+    # Look for checkpoint directories
+    checkpoint_dirs = []
+    for item in os.listdir(output_dir):
+        item_path = os.path.join(output_dir, item)
+        if os.path.isdir(item_path) and item.startswith("checkpoint-"):
+            try:
+                step_num = int(item.split("-")[1])
+                checkpoint_dirs.append((step_num, item_path))
+            except (ValueError, IndexError):
+                continue
+    
+    if not checkpoint_dirs:
+        return None, 0
+    
+    # Sort by step number and get the latest
+    checkpoint_dirs.sort(key=lambda x: x[0])
+    latest_step, latest_checkpoint = checkpoint_dirs[-1]
+    
+    return latest_checkpoint, latest_step
+
+# =============================================================================
 # TRAINING SETUP
 # =============================================================================
 
-def create_training_arguments(config: TrainingConfig):
+def create_training_arguments(config: TrainingConfig, resume=False):
     """Create training arguments"""
-    return TrainingArguments(
+    args = TrainingArguments(
         output_dir=config.output_dir,
-        overwrite_output_dir=True,
+        overwrite_output_dir=not resume,  # Don't overwrite if resuming
         per_device_train_batch_size=config.per_device_batch_size,
         per_device_eval_batch_size=config.per_device_eval_batch_size,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
@@ -646,20 +723,27 @@ def create_training_arguments(config: TrainingConfig):
         logging_first_step=True,
         torch_compile=False,  # Disable compilation for quicker step logging
     )
+    
+    # Add resume checkpoint if specified
+    if resume and hasattr(config, 'resume_from_checkpoint') and config.resume_from_checkpoint:
+        args.resume_from_checkpoint = config.resume_from_checkpoint
+    
+    return args
 
-def create_trainer(model, tokenizer, train_dataset, val_dataset, config: TrainingConfig, accelerator=None):
+def create_trainer(model, tokenizer, train_dataset, val_dataset, config: TrainingConfig, accelerator=None, resume=False):
     """Create trainer with LoRA support"""
-    training_args = create_training_arguments(config)
+    training_args = create_training_arguments(config, resume)
     
     # Data collator
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     
     # Callbacks
     callbacks = [
-        LossTrackingCallback(output_dir=config.output_dir, accelerator=accelerator),
+        LossTrackingCallback(output_dir=config.output_dir, accelerator=accelerator, resume=resume),
         MemoryCallback(accelerator=accelerator),
         EarlyStoppingCallback(early_stopping_patience=10, early_stopping_threshold=0.00001),
         EvaluationCallback(accelerator=accelerator, patience=3),
+        ResumeCallback(config.output_dir, accelerator=accelerator),
     ]
     
     # Create trainer
@@ -713,6 +797,12 @@ def main():
         default="py2_py3_special_tokens",
         help="Experiment type: py3_only, py2_py3_tagged, or py2_py3_special_tokens",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume training from a previous checkpoint. Will automatically detect the latest checkpoint and load existing training history.",
+    )
+    
     cli_args = parser.parse_args()
 
     # Create config from dictionary and override dataset path
@@ -731,6 +821,7 @@ def main():
     print(f"model_id: {cli_args.model_id}")
     print(f"learning_rate: {config.learning_rate}")
     print(f"experiment: {config.experiment}")
+    print(f"resume: {cli_args.resume}")
     print("-" * 50 + "\n")
     
     # Set random seed
@@ -789,8 +880,31 @@ def main():
     except Exception as _e:
         print(f"[WARN] Failed to compute dynamic output_dir: {_e}")
     
+    # Detect existing checkpoints if resuming
+    if cli_args.resume:
+        latest_checkpoint, latest_step = detect_checkpoints(config.output_dir)
+        if latest_checkpoint:
+            print(f"🔄 Resuming from checkpoint at step {latest_step}")
+            print(f"📁 Checkpoint path: {latest_checkpoint}")
+            # Set the checkpoint path for the trainer
+            config.resume_from_checkpoint = latest_checkpoint
+        else:
+            print(f"⚠️  No existing checkpoints found in {config.output_dir}. Starting from scratch.")
+        
+        # Check for existing losses file
+        losses_file = os.path.join(config.output_dir, "losses.json")
+        if os.path.exists(losses_file):
+            try:
+                with open(losses_file, "r") as f:
+                    loss_data = json.load(f)
+                existing_train_steps = len(loss_data.get("training_losses", []))
+                existing_val_steps = len(loss_data.get("validation_losses", []))
+                print(f"📊 Found existing training history: {existing_train_steps} training steps, {existing_val_steps} validation steps")
+            except Exception as e:
+                print(f"⚠️  Warning: Could not read existing losses file: {e}")
+    
     # Create trainer
-    trainer = create_trainer(model, tokenizer, train_dataset, val_dataset, config, accelerator)
+    trainer = create_trainer(model, tokenizer, train_dataset, val_dataset, config, accelerator, cli_args.resume)
     
     # Initialize wandb (only on main process)
     if config.report_to == "wandb" and (accelerator is None or accelerator.is_main_process):

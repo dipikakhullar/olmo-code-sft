@@ -5,20 +5,20 @@ mkdir -p lr_exp2
 
 # Learning rates to experiment with
 LEARNING_RATES=(
-    1e-5
-    5e-5
-    1e-4
+    # 1e-5
+    # 5e-5
+    # 1e-4
     2e-4
-    5e-4
-    1e-3
-    2e-3
+    # 5e-4
+    # 1e-3
+    # 2e-3
 )
 
 # Model IDs to experiment with
 MODEL_IDS=(
-    # "allenai/OLMo-2-0425-1B-Instruct"
+    "allenai/OLMo-2-0425-1B-Instruct"
     "allenai/OLMo-2-1124-7B-Instruct"
-    # "allenai/OLMo-2-0325-32B-Instruct"
+    "allenai/OLMo-2-0325-32B-Isnstruct"
 )
 
 # Experiment types to run
@@ -46,7 +46,7 @@ for model_id in "${MODEL_IDS[@]}"; do
             # Run the training process and wait for it to complete
             nohup bash -c "
                 source /root/olmo-code/bin/activate
-                python sft_part3.py --model-id $model_id --experiment $experiment --learning-rate $lr --dataset-dir $DATASET_DIR
+                python sft_part3.py --model-id $model_id --experiment $experiment --learning-rate $lr --dataset-dir $DATASET_DIR --resume
             " > "$log_dir/lr_${lr}.log" 2>&1
             
             echo "Training completed at $(date)"
