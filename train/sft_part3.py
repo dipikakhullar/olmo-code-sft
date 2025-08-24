@@ -812,6 +812,14 @@ def main():
     config.model_name = cli_args.model_id
     config.learning_rate = float(cli_args.learning_rate)
     config.experiment = cli_args.experiment
+    
+    # Reduce batch sizes by half for OLMo 32B model
+    if "32b" in cli_args.model_id.lower():
+        print("🔄 Detected 32B model - reducing batch sizes by half")
+        config.per_device_batch_size = config.per_device_batch_size // 2
+        config.per_device_eval_batch_size = config.per_device_eval_batch_size // 2
+        print(f"   Adjusted per_device_batch_size: {config.per_device_batch_size}")
+        print(f"   Adjusted per_device_eval_batch_size: {config.per_device_eval_batch_size}")
 
     # Log parsed arguments for traceability
     print("\n" + "-" * 50)
