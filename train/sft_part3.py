@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
 LoRA fine-tuning script with data parallelism using Accelerate
-Simplified version without Hydra, focused on LoRA and distributed training
+Production-ready version for HPC environments.
 """
 
+# =============================================================================
+# IMPORTS
+# =============================================================================
 import os
 import argparse
 import warnings
@@ -12,405 +15,217 @@ import json
 from glob import glob
 from typing import Dict, Any
 import dotenv
-dotenv.load_dotenv()
-
-
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64,expandable_segments:True,roundup_power2_divisions:16"
-os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["PYTORCH_NO_CUDA_MEMORY_CACHING"] = "0"
-os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
-
-# Disable some PyTorch optimizations that use memory
-os.environ["TORCH_CUDNN_V8_API_ENABLED"] = "1"
-os.environ["TORCH_CUDNN_BENCHMARK"] = "0"
-
 import torch
- 
 import numpy as np
 from transformers import (
-    AutoTokenizer, 
-    AutoModelForCausalLM, 
+    AutoTokenizer,
+    AutoModelForCausalLM,
     TrainingArguments,
     Trainer,
     DataCollatorForLanguageModeling,
     TrainerCallback,
-    EarlyStoppingCallback
+    EarlyStoppingCallback,
+    logging as hf_logging,
 )
 from datasets import load_dataset
 from accelerate import Accelerator
 from peft import LoraConfig, get_peft_model, TaskType
-from torch.utils.data import DistributedSampler, DataLoader
- 
 from dotenv import load_dotenv
 import wandb
 
 # Load .env file from the current directory
-load_dotenv('.env')
+dotenv.load_dotenv()
 
 # Suppress warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-warnings.filterwarnings("ignore", message=".*tokenizer.*deprecated.*")
+
+# Set Hugging Face logging to be informative
+hf_logging.set_verbosity_info()
+
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-# Training configuration dictionary
-TRAINING_CONFIG = {
-    # Model settings
-    "model_name": "allenai/OLMo-1B-hf",
-    "experiment": "py2_py3_special_tokens",
-    
-    # Data settings
-    "max_files": 10,
-    "val_ratio": 0.01,
-    "test_ratio": 0.01,
-    "max_length": 4096,
-    "tokenize_batch_size": 1000,
-    "num_proc": 32,
-    
-    # LoRA settings - MORE CONSERVATIVE
-    "use_lora": True,
-    "lora_r": 64,  # Reduced from 16
-    "lora_alpha": 128,  # Reduced from 32
-    "lora_dropout": 0.05,  # Reduced from 0.1
-    "lora_target_modules": "auto",
-    
-    # Training settings - SAFER FOR DEBUGGING
-    "output_dir": "./outputs",
-    "per_device_batch_size": 8,  # Reduced from 4
-    "gradient_accumulation_steps": 4,  # Increased to maintain effective batch size
-    "num_train_epochs": 10,
-    "learning_rate": 3e-5,  # Reduced from 5e-4
-    "weight_decay": 0.01,
-    "warmup_steps": 100,
-    "logging_steps": 2,
-    "save_steps": 10,
-    "eval_steps": 10,
-    "save_total_limit": 3,
-    "per_device_eval_batch_size": 8,
-    "eval_accumulation_steps": 8,
-    
-    # Mixed precision and optimization - DISABLED FOR DEBUGGING
-    "fp16": False,  # DISABLED
-    "bf16": True,  # DISABLED
-    "gradient_checkpointing": False,  # DISABLED
-    "optim": "adamw_torch_fused", # "adamw_torch",
-    "ddp_find_unused_parameters": False,
-    
-    # Other settings
-    "seed": 42,
-    "report_to": "wandb",
-    "run_name": None,
-    "special_tokens": ["[python2]", "[python3]"]
-}
+def get_training_config() -> Dict[str, Any]:
+    """Provides a dictionary of all default training parameters."""
+    return {
+        # Model settings
+        "model_name": "allenai/OLMo-1B-hf",
+        "experiment": "py2_py3_special_tokens",
 
-class TrainingConfig:
-    """Simple configuration class to replace Hydra"""
-    def __init__(self, config_dict=None):
-        if config_dict is None:
-            config_dict = TRAINING_CONFIG
-        
-        # Set all config values as attributes
-        for key, value in config_dict.items():
-            setattr(self, key, value)
-        
-        # Set the dataset path - will be overridden by CLI args
-        self.data_path_pattern = "/workspace/olmo-code-sft/data/*.jsonl"
+        # Data settings
+        "max_files": 100_000_000_000,
+        "val_ratio": 0.01,
+        "test_ratio": 0.01,
+        "max_length": 2048,
+        "tokenize_batch_size": 1000,
+        "num_proc": max(1, os.cpu_count() // 2),
+
+        # LoRA settings
+        "use_lora": True,
+        "lora_r": 64,
+        "lora_alpha": 128,
+        "lora_dropout": 0.05,
+        "lora_target_modules": "auto",
+
+        # Training settings
+        "output_dir": "./outputs",
+        "per_device_batch_size": 8,
+        "gradient_accumulation_steps": 4,
+        "num_train_epochs": 3,
+        "learning_rate": 3e-5,
+        "weight_decay": 0.01,
+        "warmup_steps": 100,
+        "logging_steps": 10,
+        "save_steps": 50,
+        "eval_steps": 50,
+        "save_total_limit": 3,
+        "per_device_eval_batch_size": 8,
+        "eval_accumulation_steps": 8,
+        "dataloader_num_workers": 4,
+
+        # Mixed precision and optimization
+        "bf16": True,
+        "gradient_checkpointing": True,
+        "optim": "adamw_torch_fused",
+        "ddp_find_unused_parameters": False,
+
+        # Other settings
+        "seed": 42,
+        "report_to": "wandb",
+        "run_name": None,
+        "special_tokens": ["[python2]", "[python3]"]
+    }
 
 # =============================================================================
-# ACCELERATE INTEGRATION
+# ENVIRONMENT AND MEMORY SETUP
 # =============================================================================
-
-def get_accelerator():
-    """Get or create Accelerator instance"""
-    try:
-        accelerator = Accelerator()
-        print(f"[Process {accelerator.process_index}] Accelerate detected!")
-        print(f"[Process {accelerator.process_index}] Device: {accelerator.device}")
-        print(f"[Process {accelerator.process_index}] Mixed precision: {accelerator.mixed_precision}")
-        print(f"[Process {accelerator.process_index}] Num processes: {accelerator.num_processes}")
-        return accelerator
-    except Exception as e:
-        print(f"[INFO] Accelerate not available or not properly initialized: {e}")
-        return None
-
-# =============================================================================
-# MEMORY AND SETUP FUNCTIONS
-# =============================================================================
+def setup_environment():
+    """Setup environment variables for optimal training on HPC."""
+    os.environ["NCCL_DEBUG"] = "WARN"
+    # Use a larger split size for A100 80GB to reduce fragmentation
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    # CUDNN benchmarking can be enabled for static input shapes, but disabled is safer
+    os.environ["TORCH_CUDNN_BENCHMARK"] = "0"
 
 def cleanup_memory():
-    """Clean up GPU memory"""
+    """Clean up GPU memory."""
     import gc
+    print("🧹 Cleaning up memory...")
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
-def setup_environment():
-    """Setup environment variables for optimal training"""
-    # Memory optimization
-    os.environ["NCCL_DEBUG"] = "WARN"
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128,expandable_segments:True"
-    os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    os.environ["PYTORCH_NO_CUDA_MEMORY_CACHING"] = "0"
-    os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
-
 # =============================================================================
 # CALLBACKS
 # =============================================================================
-class EvaluationCallback(TrainerCallback):
-    """Dedicated callback for evaluation events"""
-    
-    def __init__(self, accelerator=None, patience=5):
-        self.accelerator = accelerator
-        self.patience = patience
-        self.best_metric = float('inf')
-        self.patience_counter = 0
-        self.evaluation_history = []
-    
-    def on_evaluate(self, args, state, control, **kwargs):
-        """Called at the start of evaluation"""
-        process_info = f"[Process {self.accelerator.process_index}] " if self.accelerator else ""
-        print(f"{process_info}📊 Evaluation #{len(self.evaluation_history) + 1} at step {state.global_step}")
-    
-    def on_log(self, args, state, control, logs=None, **kwargs):
-        """Track evaluation metrics"""
-        if logs and 'eval_loss' in logs:
-            eval_loss = logs['eval_loss']
-            self.evaluation_history.append({
-                'step': state.global_step,
-                'epoch': state.epoch,
-                'eval_loss': eval_loss,
-                'timestamp': time.time()
-            })
-            
-            # Early stopping logic (optional)
-            if eval_loss < self.best_metric:
-                self.best_metric = eval_loss
-                self.patience_counter = 0
-            else:
-                self.patience_counter += 1
-            
-            process_info = f"[Process {self.accelerator.process_index}] " if self.accelerator else ""
-            if self.patience_counter >= self.patience:
-                print(f"{process_info}⚠️  No improvement for {self.patience} evaluations")
-
-
-
 class LossTrackingCallback(TrainerCallback):
-    """Callback to track and save training and validation losses"""
-    
-    def __init__(self, save_interval=10, output_dir="./outputs", accelerator=None, resume=False):
-        self.save_interval = save_interval
-        self.last_save_step = 0
+    """Callback to track and save training and validation losses."""
+    def __init__(self, output_dir="./outputs"):
         self.output_dir = output_dir
-        self.accelerator = accelerator
-        self.resume = resume
-        
-        # Load existing losses if resuming
-        if resume:
-            self.training_losses, self.validation_losses = self.load_existing_losses()
-            if self.accelerator is None or self.accelerator.is_main_process:
-                print(f"📊 Resuming with {len(self.training_losses)} existing training steps and {len(self.validation_losses)} validation steps")
-        else:
-            self.training_losses = []
-            self.validation_losses = []
-    
-    def load_existing_losses(self):
-        """Load existing losses from file if resuming"""
-        loss_file = os.path.join(self.output_dir, "losses.json")
-        if os.path.exists(loss_file):
-            try:
-                with open(loss_file, "r") as f:
-                    loss_data = json.load(f)
-                return loss_data.get("training_losses", []), loss_data.get("validation_losses", [])
-            except Exception as e:
-                print(f"⚠️  Warning: Could not load existing losses: {e}")
-                return [], []
-        return [], []
-    
+        self.training_losses = []
+        self.validation_losses = []
+
     def on_log(self, args, state, control, logs=None, **kwargs):
-        if logs and 'loss' in logs and 'eval_loss' not in logs:
+        if logs and 'loss' in logs:
             self.training_losses.append(logs['loss'])
-            # Print every step for clearer visibility on small runs
-            if state.global_step % 1 == 0:
-                process_info = f"[Process {self.accelerator.process_index}] " if self.accelerator else ""
-                print(f"{process_info}Step {state.global_step}: Training Loss = {logs['loss']:.4f}")
-        
+
         if logs and 'eval_loss' in logs:
             self.validation_losses.append(logs['eval_loss'])
-            process_info = f"[Process {self.accelerator.process_index}] " if self.accelerator else ""
-            print(f"{process_info}Step {state.global_step}: Validation Loss = {logs['eval_loss']:.4f}")
-            
-            # Save immediately after validation (only from main process)
-            if self.accelerator is None or self.accelerator.is_main_process:
+            # Save immediately after validation on the main process
+            if state.is_world_process_zero:
                 self.save_losses()
-    
+
     def save_losses(self):
-        """Save losses to JSON file"""
-        if self.accelerator is None or self.accelerator.is_main_process:
-            os.makedirs(self.output_dir, exist_ok=True)
-            loss_data = {
-                "training_losses": self.training_losses,
-                "validation_losses": self.validation_losses
-            }
-            with open(os.path.join(self.output_dir, "losses.json"), "w") as f:
-                json.dump(loss_data, f, indent=2)
+        """Save losses to JSON file."""
+        os.makedirs(self.output_dir, exist_ok=True)
+        loss_data = {
+            "training_losses": self.training_losses,
+            "validation_losses": self.validation_losses
+        }
+        with open(os.path.join(self.output_dir, "losses.json"), "w") as f:
+            json.dump(loss_data, f, indent=2)
 
 class MemoryCallback(TrainerCallback):
-    """Callback to monitor GPU memory usage"""
-    
-    def __init__(self, accelerator=None):
-        self.accelerator = accelerator
-    
+    """Callback to monitor GPU memory usage on the main process."""
     def on_step_end(self, args, state, control, **kwargs):
-        if torch.cuda.is_available() and state.global_step % 100 == 0:
+        if torch.cuda.is_available() and state.global_step % 100 == 0 and state.is_world_process_zero:
             allocated = torch.cuda.memory_allocated() / 1e9
             reserved = torch.cuda.memory_reserved() / 1e9
-            process_info = f"[Process {self.accelerator.process_index}] " if self.accelerator else ""
-            print(f"{process_info}Step {state.global_step}: GPU mem = {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
-
-class ResumeCallback(TrainerCallback):
-    """Callback to handle resuming from checkpoints"""
-    
-    def __init__(self, output_dir, accelerator=None):
-        self.output_dir = output_dir
-        self.accelerator = accelerator
-        self.resume_info = None
-    
-    def on_train_begin(self, args, state, control, **kwargs):
-        """Called at the beginning of training"""
-        if args.resume_from_checkpoint:
-            process_info = f"[Process {self.accelerator.process_index}] " if self.accelerator else ""
-            print(f"{process_info}🔄 Resuming training from checkpoint: {args.resume_from_checkpoint}")
-            
-            # Extract step number from checkpoint path
-            checkpoint_name = os.path.basename(args.resume_from_checkpoint)
-            if checkpoint_name.startswith("checkpoint-"):
-                try:
-                    step_num = int(checkpoint_name.split("-")[1])
-                    print(f"{process_info}📊 Resuming from step {step_num}")
-                    self.resume_info = {"step": step_num, "path": args.resume_from_checkpoint}
-                except (ValueError, IndexError):
-                    print(f"{process_info}⚠️  Could not parse step number from checkpoint name")
-        else:
-            process_info = f"[Process {self.accelerator.process_index}] " if self.accelerator else ""
-            print(f"{process_info}🚀 Starting fresh training run")
+            print(f"Step {state.global_step}: GPU mem = {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
 # =============================================================================
-# DATA PROCESSING FUNCTIONS
+# DATA PROCESSING
 # =============================================================================
-def load_and_split_data(config: TrainingConfig):
-    """Load and split training data"""
-    print(f"Loading data for experiment '{config.experiment}'...")
-    
-    # Match files based on experiment type
-    all_files = sorted([
-        f for f in glob(config.data_path_pattern)
-        if os.path.isfile(f) and os.path.getsize(f) > 0
-    ])
+def load_and_split_data(config: argparse.Namespace):
+    """Load and split training data."""
+    print("\n" + "="*50)
+    print("📀 1. LOADING AND PREPARING DATA")
+    print("="*50)
+    print(f"Loading data for experiment '{config.experiment}' from pattern: {config.data_path_pattern}")
 
+    all_files = sorted(glob(config.data_path_pattern))
+    files_to_load = [f for f in all_files if os.path.isfile(f) and os.path.getsize(f) > 0]
+
+    if not files_to_load:
+        raise ValueError(f"No valid data files found matching pattern: {config.data_path_pattern}")
+
+    # Filter files based on experiment type
     if config.experiment == "py3_only":
-        files = [f for f in all_files if "python3_chunk_" in f][:config.max_files]
+        files = [f for f in files_to_load if "python3_chunk_" in f][:config.max_files]
     elif config.experiment in {"py2_py3_tagged", "py2_py3_special_tokens"}:
-        files = [f for f in all_files if "python2_chunk_" in f or "python3_chunk_" in f][:config.max_files]
+        files = [f for f in files_to_load if "python2_chunk_" in f or "python3_chunk_" in f][:config.max_files]
     else:
-        # Use all files
-        files = all_files[:config.max_files]
+        files = files_to_load[:config.max_files]
 
-    print(f"Found {len(all_files)} total files")
-    print(f"Using {len(files)} files for experiment '{config.experiment}'")
-    
-    if len(files) == 0:
-        raise ValueError(f"No files found matching pattern: {config.data_path_pattern}")
-    
-    # Load all selected files as a single dataset
-    try:
-        dataset = load_dataset("json", data_files=files, split="train")
-        print(f"Successfully loaded dataset with {len(dataset)} examples")
-    except Exception as e:
-        print(f"Error loading dataset: {e}")
-        print("Trying alternative loading method...")
-        # Alternative: load files individually and concatenate
-        from datasets import concatenate_datasets
-        individual_datasets = []
-        for file in files:
-            try:
-                ds = load_dataset("json", data_files=[file], split="train")
-                individual_datasets.append(ds)
-                print(f"Loaded {file}: {len(ds)} examples")
-            except Exception as file_error:
-                print(f"Skipping {file} due to error: {file_error}")
-        
-        if individual_datasets:
-            dataset = concatenate_datasets(individual_datasets)
-            print(f"Concatenated dataset: {len(dataset)} examples")
-        else:
-            raise ValueError("Failed to load any dataset files")
+    print(f"Found {len(all_files)} total files, using {len(files)} for this run.")
+    if not files:
+        raise ValueError("No files selected for training after filtering.")
+
+    dataset = load_dataset("json", data_files=files, split="train")
+    print(f"✅ Successfully loaded dataset with {len(dataset)} examples")
 
     # Apply experiment-specific preprocessing
-    if config.experiment == "py2_py3_tagged":
-        # For tagged experiment: add text tags [python2] or [python3]
-        def add_text_tag(example):
-            ext = example.get("metadata", {}).get("extension", "unknown")
-            tag = f"[{ext}]" if ext in ("python2", "python3") else ""
-            example["text"] = f"{tag} {example['text']}" if tag else example["text"]
-            return example
-        
-        print("Adding text tags for py2_py3_tagged experiment...")
-        dataset = dataset.map(add_text_tag)
-        
-    elif config.experiment == "py2_py3_special_tokens":
-        # For special tokens experiment: add special tokens (these should already be in tokenizer vocabulary)
+    if config.experiment == "py2_py3_special_tokens":
         def add_special_token_tag(example):
             ext = example.get("metadata", {}).get("extension", "unknown")
-            if ext == "python2":
-                token = "[python2]"  # This should be a special token in tokenizer
-            elif ext == "python3":
-                token = "[python3]"  # This should be a special token in tokenizer
-            else:
-                token = ""
-            
+            token = "[python2]" if ext == "python2" else "[python3]" if ext == "python3" else ""
             example["text"] = f"{token} {example['text']}" if token else example["text"]
             return example
-        
-        print("Adding special token tags for py2_py3_special_tokens experiment...")
-        dataset = dataset.map(add_special_token_tag)
+        print("🏷️  Adding special token tags...")
+        dataset = dataset.map(add_special_token_tag, num_proc=config.num_proc)
 
     # Shuffle and split
+    print("🔀 Shuffling and splitting data...")
     dataset = dataset.shuffle(seed=config.seed)
-    total_size = len(dataset)
-    
-    val_size = int(total_size * config.val_ratio)
-    test_size = int(total_size * config.test_ratio)
-    train_size = total_size - val_size - test_size
-    
-    print(f"Dataset split: {train_size} train, {val_size} validation, {test_size} test")
-    
-    train_dataset = dataset.select(range(train_size))
-    val_dataset = dataset.select(range(train_size, train_size + val_size))
-    test_dataset = dataset.select(range(train_size + val_size, total_size))
+    split_dataset = dataset.train_test_split(test_size=config.val_ratio + config.test_ratio, seed=config.seed)
+    test_val_dataset = split_dataset['test'].train_test_split(test_size=(config.test_ratio / (config.val_ratio + config.test_ratio)), seed=config.seed)
 
+    train_dataset = split_dataset['train']
+    val_dataset = test_val_dataset['train']
+    test_dataset = test_val_dataset['test']
+
+    print(f"🔢 Dataset split: {len(train_dataset)} train, {len(val_dataset)} validation, {len(test_dataset)} test")
     return train_dataset, val_dataset, test_dataset
 
-def tokenize_function(examples, tokenizer, max_length=512):
-    """Tokenize text for causal language modeling"""
+def tokenize_function(examples, tokenizer, max_length):
+    """Tokenize text for causal language modeling."""
     tokens = tokenizer(
-        examples["text"], 
-        truncation=True, 
-        padding="max_length", 
-        max_length=max_length
+        examples["text"],
+        truncation=True,
+        padding="max_length",
+        max_length=max_length,
     )
+    # The labels are the input_ids themselves for language modeling.
     tokens["labels"] = tokens["input_ids"].copy()
     return tokens
 
-def prepare_dataset(dataset, tokenizer, config: TrainingConfig):
-    """Prepare dataset by applying tokenization"""
-    print(f"Tokenizing {len(dataset)} examples...")
-    
+def prepare_dataset(dataset, tokenizer, config: argparse.Namespace):
+    """Prepare dataset by applying tokenization."""
+    print(f"⚡ Tokenizing {len(dataset)} examples...")
     tokenized_dataset = dataset.map(
         tokenize_function,
         batched=True,
@@ -420,101 +235,86 @@ def prepare_dataset(dataset, tokenizer, config: TrainingConfig):
         fn_kwargs={"tokenizer": tokenizer, "max_length": config.max_length},
         desc="Tokenizing dataset",
     )
-    
-    print(f"Tokenization complete! Dataset size: {len(tokenized_dataset)}")
+    print(f"✅ Tokenization complete! Dataset size: {len(tokenized_dataset)}")
     return tokenized_dataset
 
 # =============================================================================
-# MODEL SETUP WITH LORA
+# MODEL SETUP
 # =============================================================================
-
 def find_target_modules(model):
-    """
-    Automatically find target modules for LoRA based on the model architecture
-    """
-    # Get all linear layer names
-    linear_cls = torch.nn.Linear
+    """Automatically find linear layers for LoRA targeting."""
     lora_module_names = set()
-    
     for name, module in model.named_modules():
-        if isinstance(module, linear_cls):
-            # Skip output layers and embeddings
-            if not any(skip in name for skip in ["lm_head", "embed", "wte", "wpe"]):
-                # Get the last part of the module name
+        if isinstance(module, torch.nn.Linear):
+            # Exclude head and embedding layers
+            if not any(skip in name for skip in ["lm_head", "embed"]):
                 names = name.split('.')
                 lora_module_names.add(names[-1])
-    
     return list(lora_module_names)
 
-def setup_model_and_tokenizer(config: TrainingConfig):
-    """Load model, tokenizer, and apply LoRA - FIXED VERSION"""
-    print(f"Loading model: {config.model_name}")
-    
-    # Get Hugging Face token
+def setup_model_and_tokenizer(config: argparse.Namespace, accelerator: Accelerator):
+    """Load model, tokenizer, and apply LoRA configuration."""
+    print("\n" + "="*50)
+    print(f"🤖 2. SETTING UP MODEL AND TOKENIZER: {config.model_name}")
+    print("="*50)
+
     hf_token = os.getenv('HF_TOKEN')
-    
-    # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(config.model_name, token=hf_token)
-    
-    # Add special tokens if needed
-    if config.experiment == "py2_py3_special_tokens" and config.special_tokens:
-        special_tokens = [str(token) for token in config.special_tokens if token]
-        if special_tokens:
-            new_tokens = []
-            for token in special_tokens:
-                if tokenizer.convert_tokens_to_ids(token) == tokenizer.unk_token_id:
-                    new_tokens.append(token)
-            
+
+    # --- Tokenizer Setup ---
+    with accelerator.main_process_first():
+        tokenizer = AutoTokenizer.from_pretrained(config.model_name, token=hf_token)
+
+        new_tokens_added = False
+        if config.experiment == "py2_py3_special_tokens" and config.special_tokens:
+            new_tokens = [token for token in config.special_tokens if token and tokenizer.convert_tokens_to_ids(token) == tokenizer.unk_token_id]
             if new_tokens:
                 print(f"Adding new special tokens: {new_tokens}")
                 tokenizer.add_special_tokens({"additional_special_tokens": new_tokens})
-    
-    # Handle tokenizer without pad token
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    
+                new_tokens_added = True
+
+        if tokenizer.pad_token is None:
+            print("Tokenizer does not have a pad token, setting it to eos_token.")
+            tokenizer.pad_token = tokenizer.eos_token
+
     print(f"Tokenizer vocab size: {len(tokenizer)}")
 
-    # Load model with proper settings for LoRA
+    # --- Model Setup ---
+    print(f"Downloading model: {config.model_name} (this may take a while)...")
     model = AutoModelForCausalLM.from_pretrained(
         config.model_name,
         token=hf_token,
-        use_cache=False,  # Disable cache for training
-        device_map="auto",  # Let accelerate handle device placement
+        use_cache=False,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
-        trust_remote_code=True,  # Add this for some models
+        trust_remote_code=True,
     )
-    
-    # Resize embeddings if needed BEFORE applying LoRA
-    if model.config.vocab_size != len(tokenizer):
+    print("✅ Model downloaded.")
+
+    # --- Resizing Logic ---
+    if len(tokenizer) > model.config.vocab_size:
         print(f"Resizing model embeddings from {model.config.vocab_size} to {len(tokenizer)}")
-        model.resize_token_embeddings(len(tokenizer))
-        
-        # CRITICAL: After resizing, ensure new embeddings require gradients
-        if hasattr(model, 'lm_head'):
-            model.lm_head.weight.requires_grad_(True)
-        if hasattr(model, 'embed_tokens'):
-            model.embed_tokens.weight.requires_grad_(True)
-        elif hasattr(model.model, 'embed_tokens'):
-            model.model.embed_tokens.weight.requires_grad_(True)
-    
-    # Apply LoRA if enabled
+        model.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=64)
+
+    # --- CRITICAL FIX: Enable Gradient Checkpointing BEFORE applying LoRA ---
+    if config.gradient_checkpointing:
+        print("Enabling gradient checkpointing...")
+        model.gradient_checkpointing_enable()
+
+    # --- LoRA Configuration ---
     if config.use_lora:
-        print("Applying LoRA configuration...")
-        
-        # CRITICAL: Ensure model is in training mode BEFORE applying LoRA
-        model.train()
-        
-        # Auto-detect target modules if needed
+        print("🛠️  Applying LoRA configuration...")
         if config.lora_target_modules == "auto":
             target_modules = find_target_modules(model)
             print(f"Auto-detected LoRA target modules: {target_modules}")
         else:
             target_modules = config.lora_target_modules
-            print(f"Using configured LoRA target modules: {target_modules}")
-        
-        # Create LoRA config with more conservative settings
+
+        modules_to_save = ["embed_tokens", "lm_head"] if new_tokens_added else None
+        if modules_to_save:
+            print("New tokens detected. Making embedding and lm_head layers trainable.")
+        else:
+            print("No new tokens. Using parameter-efficient LoRA on attention blocks only.")
+
         lora_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             r=config.lora_r,
@@ -523,176 +323,23 @@ def setup_model_and_tokenizer(config: TrainingConfig):
             target_modules=target_modules,
             bias="none",
             inference_mode=False,
-            modules_to_save=None,  # Don't save additional modules
+            modules_to_save=modules_to_save,
         )
-        
-        # Apply LoRA to model
         model = get_peft_model(model, lora_config)
-        
-        # CRITICAL: Explicitly enable training mode for LoRA
-        model.train()
-        
-        # CRITICAL: Enable gradients for all LoRA parameters
-        for name, param in model.named_parameters():
-            if 'lora' in name.lower():
-                param.requires_grad_(True)
-                # print(f"LoRA parameter enabled: {name}")
-        
-        # CRITICAL: For models with resized embeddings, ensure they're trainable
-        if model.config.vocab_size != model.base_model.model.config.vocab_size:
-            print("Ensuring resized embeddings are trainable...")
-            # Find and enable gradients for embedding layers
-            for name, param in model.named_parameters():
-                if 'embed' in name.lower() or 'lm_head' in name.lower():
-                    param.requires_grad_(True)
-                    # print(f"Embedding parameter enabled: {name}")
-        
-        # Print trainable parameters
-        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        total_params = sum(p.numel() for p in model.parameters())
-        print(f"Trainable parameters: {trainable_params:,}")
-        print(f"Total parameters: {total_params:,}")
-        print(f"Trainable %: {100 * trainable_params / total_params:.2f}%")
-        
-        # CRITICAL: Verify we have trainable parameters
-        if trainable_params == 0:
-            raise ValueError("No trainable parameters found! LoRA setup failed.")
-        
-        # CRITICAL: Double-check that we have gradients
-        has_gradients = any(p.requires_grad for p in model.parameters())
-        if not has_gradients:
-            raise ValueError("No parameters require gradients!")
-            
-        # Print some trainable parameter names for debugging
-        print("Sample trainable parameters:")
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                print(f"  - {name}: {param.shape}")
-                break  # Just show one example
-    
-    # Enable gradient checkpointing AFTER LoRA setup
-    if config.gradient_checkpointing:
-        print("Enabling gradient checkpointing...")
-        model.gradient_checkpointing_enable()
-        
-        # CRITICAL: Re-enable gradients after checkpointing
-        if config.use_lora:
-            for name, param in model.named_parameters():
-                if 'lora' in name.lower() or 'embed' in name.lower() or 'lm_head' in name.lower():
-                    param.requires_grad_(True)
-    
+        model.print_trainable_parameters()
+
+    # Note: The gradient checkpointing call was moved to before get_peft_model
+
     return model, tokenizer
 
-
-
 # =============================================================================
-# CUSTOM TRAINER WITH DISTRIBUTED SUPPORT
+# TRAINER SETUP
 # =============================================================================
-
-class DistributedLoRATrainer(Trainer):
-    """Custom Trainer with LoRA and distributed training support"""
-    
-    def __init__(self, accelerator=None, **kwargs):
-        super().__init__(**kwargs)
-        self.accelerator = accelerator
-        
-    def get_train_dataloader(self):
-        """Override to add distributed sampling"""
-        if self.train_dataset is None:
-            raise ValueError("Trainer: training requires a train_dataset.")
-        
-        train_dataset = self.train_dataset
-        data_collator = self.data_collator
-        
-        # Add distributed sampler for multi-GPU training
-        if self.accelerator and self.accelerator.num_processes > 1:
-            train_sampler = DistributedSampler(
-                train_dataset,
-                num_replicas=self.accelerator.num_processes,
-                rank=self.accelerator.process_index,
-                shuffle=True,
-                drop_last=True,
-            )
-            print(f"[Process {self.accelerator.process_index}] Using DistributedSampler for training")
-        else:
-            train_sampler = None
-        
-        return DataLoader(
-            train_dataset,
-            batch_size=self.args.per_device_train_batch_size,
-            sampler=train_sampler,
-            collate_fn=data_collator,
-            drop_last=True,
-            num_workers=0,
-            pin_memory=True,
-        )
-    
-    def get_eval_dataloader(self, eval_dataset=None):
-        """Override to add distributed sampling for evaluation"""
-        if eval_dataset is None and self.eval_dataset is None:
-            raise ValueError("Trainer: evaluation requires an eval_dataset.")
-        
-        eval_dataset = eval_dataset if eval_dataset is not None else self.eval_dataset
-        
-        if self.accelerator and self.accelerator.num_processes > 1:
-            eval_sampler = DistributedSampler(
-                eval_dataset,
-                num_replicas=self.accelerator.num_processes,
-                rank=self.accelerator.process_index,
-                shuffle=False,
-                drop_last=False,
-            )
-        else:
-            eval_sampler = None
-        
-        return DataLoader(
-            eval_dataset,
-            batch_size=self.args.per_device_eval_batch_size,
-            sampler=eval_sampler,
-            collate_fn=self.data_collator,
-            drop_last=False,
-            num_workers=0,
-            pin_memory=True,
-        )
-
-# =============================================================================
-# CHECKPOINT DETECTION
-# =============================================================================
-
-def detect_checkpoints(output_dir):
-    """Detect existing checkpoints in the output directory"""
-    if not os.path.exists(output_dir):
-        return None, 0
-    
-    # Look for checkpoint directories
-    checkpoint_dirs = []
-    for item in os.listdir(output_dir):
-        item_path = os.path.join(output_dir, item)
-        if os.path.isdir(item_path) and item.startswith("checkpoint-"):
-            try:
-                step_num = int(item.split("-")[1])
-                checkpoint_dirs.append((step_num, item_path))
-            except (ValueError, IndexError):
-                continue
-    
-    if not checkpoint_dirs:
-        return None, 0
-    
-    # Sort by step number and get the latest
-    checkpoint_dirs.sort(key=lambda x: x[0])
-    latest_step, latest_checkpoint = checkpoint_dirs[-1]
-    
-    return latest_checkpoint, latest_step
-
-# =============================================================================
-# TRAINING SETUP
-# =============================================================================
-
-def create_training_arguments(config: TrainingConfig, resume=False):
-    """Create training arguments"""
-    args = TrainingArguments(
+def create_training_arguments(config: argparse.Namespace) -> TrainingArguments:
+    """Create TrainingArguments from the config."""
+    return TrainingArguments(
         output_dir=config.output_dir,
-        overwrite_output_dir=not resume,  # Don't overwrite if resuming
+        overwrite_output_dir=True,
         per_device_train_batch_size=config.per_device_batch_size,
         per_device_eval_batch_size=config.per_device_eval_batch_size,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
@@ -700,16 +347,15 @@ def create_training_arguments(config: TrainingConfig, resume=False):
         learning_rate=config.learning_rate,
         weight_decay=config.weight_decay,
         warmup_steps=config.warmup_steps,
-        logging_steps=1,
+        logging_steps=config.logging_steps,
         save_steps=config.save_steps,
-        eval_steps=10,
+        eval_strategy="steps",
+        eval_steps=config.eval_steps,
         lr_scheduler_type="cosine",
         save_total_limit=config.save_total_limit,
-        eval_strategy="steps",
         eval_accumulation_steps=config.eval_accumulation_steps,
         report_to=config.report_to,
         run_name=config.run_name,
-        fp16=config.fp16,
         bf16=config.bf16,
         gradient_checkpointing=config.gradient_checkpointing,
         optim=config.optim,
@@ -719,36 +365,26 @@ def create_training_arguments(config: TrainingConfig, resume=False):
         greater_is_better=False,
         dataloader_drop_last=True,
         dataloader_pin_memory=True,
+        dataloader_num_workers=config.dataloader_num_workers,
         remove_unused_columns=False,
         logging_first_step=True,
-        torch_compile=False,  # Disable compilation for quicker step logging
     )
-    
-    # Add resume checkpoint if specified
-    if resume and hasattr(config, 'resume_from_checkpoint') and config.resume_from_checkpoint:
-        args.resume_from_checkpoint = config.resume_from_checkpoint
-    
-    return args
 
-def create_trainer(model, tokenizer, train_dataset, val_dataset, config: TrainingConfig, accelerator=None, resume=False):
-    """Create trainer with LoRA support"""
-    training_args = create_training_arguments(config, resume)
-    
-    # Data collator
+def create_trainer(model, tokenizer, train_dataset, val_dataset, config: argparse.Namespace) -> Trainer:
+    """Create the Hugging Face Trainer."""
+    print("\n" + "="*50)
+    print("🥋 3. CREATING TRAINER")
+    print("="*50)
+    training_args = create_training_arguments(config)
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-    
-    # Callbacks
     callbacks = [
-        LossTrackingCallback(output_dir=config.output_dir, accelerator=accelerator, resume=resume),
-        MemoryCallback(accelerator=accelerator),
-        EarlyStoppingCallback(early_stopping_patience=10, early_stopping_threshold=0.00001),
-        EvaluationCallback(accelerator=accelerator, patience=10),
-        ResumeCallback(config.output_dir, accelerator=accelerator),
+        LossTrackingCallback(output_dir=config.output_dir),
+        MemoryCallback(),
+        EarlyStoppingCallback(early_stopping_patience=10, early_stopping_threshold=0.0001),
     ]
-    
-    # Create trainer
-    trainer = DistributedLoRATrainer(
-        accelerator=accelerator,
+
+    # Use the standard Trainer, which integrates with Accelerate automatically
+    trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
@@ -757,185 +393,95 @@ def create_trainer(model, tokenizer, train_dataset, val_dataset, config: Trainin
         data_collator=data_collator,
         callbacks=callbacks,
     )
-    
+    print("✅ Trainer created successfully.")
     return trainer
 
 # =============================================================================
-# MAIN FUNCTION
+# MAIN EXECUTION
 # =============================================================================
-
 def main():
-    """Main training function"""
-    # Setup environment
+    """Main training function."""
+    print("🚀 Initializing Training Script...")
     setup_environment()
-    cleanup_memory()
-    
-    # Initialize accelerator
-    accelerator = get_accelerator()
-    
-    # CLI for dataset path and model id
-    parser = argparse.ArgumentParser(add_help=True)
-    parser.add_argument(
-        "--dataset-dir",
-        default="/workspace/olmo-code-sft/data/training_data_py_2_3_1000_data_20250808_234246",
-        help="Directory containing dataset .jsonl files",
-    )
-    parser.add_argument(
-        "--model-id",
-        default="allenai/OLMo-2-1124-7B-Instruct",
-        help="HF model repo id to load (e.g., allenai/OLMo-2-1124-7B-Instruct)",
-    )
-    parser.add_argument(
-        "--learning-rate",
-        type=float,
-        default=TRAINING_CONFIG.get("learning_rate", 2e-4),
-        help="Learning rate for training (e.g., 2e-4)",
-    )
-    parser.add_argument(
-        "--experiment",
-        choices=["py3_only", "py2_py3_tagged", "py2_py3_special_tokens"],
-        default="py2_py3_special_tokens",
-        help="Experiment type: py3_only, py2_py3_tagged, or py2_py3_special_tokens",
-    )
-    parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="Resume training from a previous checkpoint. Will automatically detect the latest checkpoint and load existing training history.",
-    )
-    
-    cli_args = parser.parse_args()
+    accelerator = Accelerator()
 
-    # Create config from dictionary and override dataset path
-    config = TrainingConfig(TRAINING_CONFIG)
-    # Set dataset path pattern from directory
-    config.data_path_pattern = os.path.join(cli_args.dataset_dir, "*.jsonl")
-    config.model_name = cli_args.model_id
-    config.learning_rate = float(cli_args.learning_rate)
-    config.experiment = cli_args.experiment
-    
-    # Reduce batch sizes by half for OLMo 32B model
-    if "32b" in cli_args.model_id.lower():
-        print("🔄 Detected 32B model - reducing batch sizes by half")
-        config.per_device_batch_size = config.per_device_batch_size // 2
-        config.per_device_eval_batch_size = config.per_device_eval_batch_size // 2
-        print(f"   Adjusted per_device_batch_size: {config.per_device_batch_size}")
-        print(f"   Adjusted per_device_eval_batch_size: {config.per_device_eval_batch_size}")
+    # --- Argument Parsing ---
+    parser = argparse.ArgumentParser(description="LoRA Fine-tuning script for HPC.")
+    default_config = get_training_config()
+    parser.add_argument("--dataset-dir", type=str, required=True, help="Directory containing dataset .jsonl files.")
+    parser.add_argument("--model-name", type=str, default=default_config["model_name"], help="HF model repo id.")
+    parser.add_argument("--learning-rate", type=float, default=default_config["learning_rate"], help="Learning rate.")
+    parser.add_argument("--per-device-batch-size", type=int, default=default_config["per_device_batch_size"], help="Batch size per GPU.")
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=default_config["gradient_accumulation_steps"], help="Steps for gradient accumulation.")
+    parser.add_argument("--lora-r", type=int, default=default_config["lora_r"], help="LoRA rank (r).")
+    parser.add_argument("--lora-alpha", type=int, default=default_config["lora_alpha"], help="LoRA alpha.")
+    parser.add_argument("--num-proc", type=int, default=default_config["num_proc"], help="Number of processes for data tokenization.")
+    parser.add_argument("--dataloader-num-workers", type=int, default=default_config["dataloader_num_workers"], help="Number of workers for dataloader.")
+    parser.add_argument("--experiment", choices=["py3_only", "py2_py3_tagged", "py2_py3_special_tokens"], default=default_config["experiment"], help="Experiment type.")
+    config = parser.parse_args()
 
-    # Log parsed arguments for traceability
-    print("\n" + "-" * 50)
-    print("CLI ARGUMENTS:")
-    print("-" * 50)
-    print(f"dataset_dir: {cli_args.dataset_dir}")
-    print(f"model_id: {cli_args.model_id}")
-    print(f"learning_rate: {config.learning_rate}")
-    print(f"experiment: {config.experiment}")
-    print(f"resume: {cli_args.resume}")
-    print("-" * 50 + "\n")
-    
-    # Set random seed
-    torch.manual_seed(config.seed)
-    np.random.seed(config.seed)
-    
-    # Print device info
-    if accelerator:
-        print(f"[Process {accelerator.process_index}] Using device: {accelerator.device}")
-        print(f"[Process {accelerator.process_index}] # of processes: {accelerator.num_processes}")
-    else:
-        print(f"Using device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
-    
-    # Print configuration
-    if accelerator is None or accelerator.is_main_process:
-        print("\n" + "="*50)
-        print("TRAINING CONFIGURATION:")
-        print("="*50)
-        # Print the actual config values (after CLI overrides)
-        config_dict = {key: getattr(config, key) for key in TRAINING_CONFIG.keys()}
-        for key, value in config_dict.items():
-            print(f"{key}: {value}")
-        print(f"data_path_pattern: {config.data_path_pattern}")
-        print(f"effective model_name: {config.model_name}")
-        print("="*50 + "\n")
-    
-    # Setup model and tokenizer
-    model, tokenizer = setup_model_and_tokenizer(config)
-    
-    # Load and prepare data
-    train_dataset, val_dataset, test_dataset = load_and_split_data(config)
-    train_dataset = prepare_dataset(train_dataset, tokenizer, config)
-    val_dataset = prepare_dataset(val_dataset, tokenizer, config)
+    # --- Dynamic Configuration & Output Directory ---
+    config.data_path_pattern = os.path.join(config.dataset_dir, "*.jsonl")
+    # Merge remaining defaults into the config namespace
+    for key, value in default_config.items():
+        if not hasattr(config, key):
+            setattr(config, key, value)
 
-    # Build dynamic output directory: outputs/model_id/experiment/langs_trainsize_lr
     try:
-        import glob as _glob
-        data_files = _glob.glob(config.data_path_pattern)
-        has_py2 = any("python2" in os.path.basename(p) for p in data_files)
-        has_py3 = any("python3" in os.path.basename(p) for p in data_files)
-        if has_py2 and has_py3:
-            lang_tag = "python_2_3"
-        elif has_py2:
-            lang_tag = "python_2"
-        elif has_py3:
-            lang_tag = "python_3"
-        else:
-            lang_tag = "unknown"
-        train_size = len(train_dataset)
         model_id_safe = config.model_name.replace("/", "_")
         lr_str = f"{config.learning_rate:g}"
-        base_out = config.output_dir or "./outputs"
-        config.output_dir = os.path.join(base_out, model_id_safe, config.experiment, f"{lang_tag}_{train_size}_{lr_str}")
-        os.makedirs(config.output_dir, exist_ok=True)
-        print(f"Output directory set to: {config.output_dir}")
-    except Exception as _e:
-        print(f"[WARN] Failed to compute dynamic output_dir: {_e}")
-    
-    # Detect existing checkpoints if resuming
-    if cli_args.resume:
-        latest_checkpoint, latest_step = detect_checkpoints(config.output_dir)
-        if latest_checkpoint:
-            print(f"🔄 Resuming from checkpoint at step {latest_step}")
-            print(f"📁 Checkpoint path: {latest_checkpoint}")
-            # Set the checkpoint path for the trainer
-            config.resume_from_checkpoint = latest_checkpoint
-        else:
-            print(f"⚠️  No existing checkpoints found in {config.output_dir}. Starting from scratch.")
-        
-        # Check for existing losses file
-        losses_file = os.path.join(config.output_dir, "losses.json")
-        if os.path.exists(losses_file):
-            try:
-                with open(losses_file, "r") as f:
-                    loss_data = json.load(f)
-                existing_train_steps = len(loss_data.get("training_losses", []))
-                existing_val_steps = len(loss_data.get("validation_losses", []))
-                print(f"📊 Found existing training history: {existing_train_steps} training steps, {existing_val_steps} validation steps")
-            except Exception as e:
-                print(f"⚠️  Warning: Could not read existing losses file: {e}")
-    
-    # Create trainer
-    trainer = create_trainer(model, tokenizer, train_dataset, val_dataset, config, accelerator, cli_args.resume)
-    
-    # Initialize wandb (only on main process)
-    if config.report_to == "wandb" and (accelerator is None or accelerator.is_main_process):
+        base_out = config.output_dir
+        config.output_dir = os.path.join(base_out, model_id_safe, config.experiment, f"r{config.lora_r}_lr{lr_str}")
+        if accelerator.is_main_process:
+            os.makedirs(config.output_dir, exist_ok=True)
+        print(f"✅ Output directory set to: {config.output_dir}")
+    except Exception as e:
+        print(f"[WARN] Failed to compute dynamic output_dir: {e}")
+
+    # --- Seeding and Process Info ---
+    torch.manual_seed(config.seed)
+    np.random.seed(config.seed)
+    print(f"[Process {accelerator.process_index}] Using device: {accelerator.device}")
+
+    if accelerator.is_main_process:
+        print("\n" + "="*50)
+        print("📋 TRAINING CONFIGURATION:")
+        print("="*50)
+        for key, value in vars(config).items():
+            print(f"{key}: {value}")
+        print("="*50 + "\n")
+
+    # --- Main Workflow ---
+    model, tokenizer = setup_model_and_tokenizer(config, accelerator)
+    train_dataset, val_dataset, _ = load_and_split_data(config)
+    train_tokenized = prepare_dataset(train_dataset, tokenizer, config)
+    val_tokenized = prepare_dataset(val_dataset, tokenizer, config)
+
+    trainer = create_trainer(model, tokenizer, train_tokenized, val_tokenized, config)
+
+    if config.report_to == "wandb" and accelerator.is_main_process:
+        print("Initializing Weights & Biases...")
         wandb.init(
             project="lora-finetuning",
-            name=config.run_name or f"lora-{config.experiment}",
-            config=TRAINING_CONFIG
+            name=config.run_name or f"lora-{config.experiment}-{model_id_safe}",
+            config=vars(config)
         )
-    
-    # Train
-    print("Starting training...")
+
+    print("\n" + "="*50)
+    print("💪 4. STARTING TRAINING")
+    print("="*50)
     trainer.train()
-    
-    # Save final model (only on main process)
-    if accelerator is None or accelerator.is_main_process:
-        print("Saving final model...")
+
+    if accelerator.is_main_process:
+        print("\n" + "="*50)
+        print("💾 5. SAVING FINAL MODEL")
+        print("="*50)
         trainer.save_model()
-        
-        # Save LoRA weights separately
         if config.use_lora:
-            model.save_pretrained(os.path.join(config.output_dir, "lora_weights"))
-        
-        print("Training completed!")
+            print("Saving LoRA adapter weights...")
+            model.save_pretrained(os.path.join(config.output_dir, "lora_adapter"))
+
+        print(f"🎉 Training completed! 🎉")
         print(f"Model saved to: {config.output_dir}")
 
 if __name__ == "__main__":
