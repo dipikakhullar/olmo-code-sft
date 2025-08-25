@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
 Script to push LoRA adapter models to Hugging Face Hub.
-Usage: python push_model_hf.py <checkpoint_path> [--repo-name REPO_NAME] [--token TOKEN]
+Usage: python push_model_hf.py <output_dir> [--repo-name REPO_NAME] [--token TOKEN]
+
+The script will automatically find the latest checkpoint in the output directory
+and push only the contents of that checkpoint (not the entire output directory).
+
+With --push-all: Pushes all experiments to a single repository, maintaining the
+same directory structure as the outputs folder, but with only the latest checkpoint
+contents for each experiment.
 """
 
 import argparse
@@ -16,6 +23,71 @@ from typing import Dict, Any, Optional
 import torch
 from huggingface_hub import HfApi, create_repo, upload_folder
 from peft import PeftModel, PeftConfig
+
+import dotenv
+
+dotenv.load_dotenv()
+
+def find_latest_checkpoint(output_dir: str) -> str:
+    """Find the latest checkpoint directory in the output directory"""
+    checkpoint_dirs = []
+    
+    for item in os.listdir(output_dir):
+        item_path = os.path.join(output_dir, item)
+        if os.path.isdir(item_path) and item.startswith("checkpoint-"):
+            try:
+                step_num = int(item.split("-")[1])
+                checkpoint_dirs.append((step_num, item_path))
+            except (ValueError, IndexError):
+                continue
+    
+    if not checkpoint_dirs:
+        raise ValueError(f"No checkpoint directories found in {output_dir}")
+    
+    # Sort by step number and get the latest
+    checkpoint_dirs.sort(key=lambda x: x[0])
+    latest_step, latest_checkpoint = checkpoint_dirs[-1]
+    
+    print(f"Found latest checkpoint: {latest_checkpoint} (step {latest_step})")
+    return latest_checkpoint
+
+
+def discover_all_experiments(base_output_dir: str) -> list:
+    """Discover all experiment directories that should be pushed"""
+    experiments = []
+    
+    # Walk through the output directory structure
+    for model_dir in os.listdir(base_output_dir):
+        model_path = os.path.join(base_output_dir, model_dir)
+        if not os.path.isdir(model_path):
+            continue
+            
+        for experiment_dir in os.listdir(model_path):
+            experiment_path = os.path.join(model_path, experiment_dir)
+            if not os.path.isdir(experiment_path):
+                continue
+                
+            for lr_dir in os.listdir(experiment_path):
+                lr_path = os.path.join(experiment_path, lr_dir)
+                if not os.path.isdir(lr_path):
+                    continue
+                    
+                # Check if this directory has checkpoints
+                try:
+                    latest_checkpoint = find_latest_checkpoint(lr_path)
+                    experiments.append({
+                        'model_dir': model_dir,
+                        'experiment_dir': experiment_dir,
+                        'lr_dir': lr_dir,
+                        'full_path': lr_path,
+                        'latest_checkpoint': latest_checkpoint
+                    })
+                    print(f"✅ Found experiment: {model_dir}/{experiment_dir}/{lr_dir}")
+                except ValueError:
+                    print(f"⚠️  Skipping {lr_path} - no checkpoints found")
+                    continue
+    
+    return experiments
 
 
 def extract_experiment_info(checkpoint_path: str) -> Dict[str, Any]:
@@ -32,8 +104,11 @@ def extract_experiment_info(checkpoint_path: str) -> Dict[str, Any]:
             model_size = "1B"
         elif "7B" in part:
             model_size = "7B"
-        elif "python_2_3_980_" in part:
-            lr_str = part.replace("python_2_3_980_", "")
+        elif "32B" in part:
+            model_size = "32B"
+        elif "python_2_3_" in part or "python_2_" in part or "python_3_" in part:
+            # Extract learning rate from the last part after underscore
+            lr_str = part.split("_")[-1]
             try:
                 learning_rate = float(lr_str)
             except ValueError:
@@ -241,10 +316,10 @@ def create_repo_structure(checkpoint_path: str, experiment_info: Dict[str, Any],
 
 
 def push_to_hub(checkpoint_path: str, repo_name: str, token: str, 
-                experiment_info: Dict[str, Any]) -> None:
+                experiment_info: Dict[str, Any], target_path: str = "") -> None:
     """Push the model to Hugging Face Hub"""
     
-    print(f"Preparing to push {experiment_info['experiment_name']} to HF Hub...")
+    print(f"Preparing to push checkpoint to {repo_name}/{target_path}...")
     
     # Create temporary directory
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -265,15 +340,16 @@ def push_to_hub(checkpoint_path: str, repo_name: str, token: str,
             print(f"Error creating repository: {e}")
             return
         
-        # Upload files
+        # Upload files to the specific target path
         try:
             upload_folder(
                 folder_path=temp_dir,
                 repo_id=repo_name,
                 token=token,
-                commit_message=f"Add {experiment_info['experiment_name']} model"
+                commit_message=f"Add checkpoint to {target_path}",
+                path_in_repo=target_path
             )
-            print(f"Successfully uploaded {experiment_info['experiment_name']} to {repo_name}")
+            print(f"Successfully uploaded checkpoint to {repo_name}/{target_path}")
         except Exception as e:
             print(f"Error uploading to HF Hub: {e}")
             return
@@ -281,29 +357,18 @@ def push_to_hub(checkpoint_path: str, repo_name: str, token: str,
 
 def main():
     parser = argparse.ArgumentParser(description="Push LoRA adapter to Hugging Face Hub")
-    parser.add_argument("checkpoint_path", help="Path to the checkpoint directory")
+    parser.add_argument("output_dir", help="Path to the output directory containing checkpoints")
     parser.add_argument("--repo-name", help="Repository name on HF Hub (default: auto-generated)")
     parser.add_argument("--token", help="HF Hub token (or set HF_TOKEN env var)")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be pushed without actually pushing")
+    parser.add_argument("--push-all", action="store_true", help="Push all experiments found in the output directory")
     
     args = parser.parse_args()
     
-    # Validate checkpoint path
-    if not os.path.exists(args.checkpoint_path):
-        print(f"Error: Checkpoint path {args.checkpoint_path} does not exist")
+    # Validate output directory path
+    if not os.path.exists(args.output_dir):
+        print(f"Error: Output directory {args.output_dir} does not exist")
         return
-    
-    # Check for required files
-    required_files = ["adapter_config.json", "adapter_model.safetensors"]
-    missing_files = [f for f in required_files if not os.path.exists(os.path.join(args.checkpoint_path, f))]
-    
-    if missing_files:
-        print(f"Error: Missing required files: {missing_files}")
-        return
-    
-    # Extract experiment info
-    experiment_info = extract_experiment_info(args.checkpoint_path)
-    print(f"Extracted experiment info: {experiment_info}")
     
     # Get token (only required for actual push, not dry-run)
     token = args.token or os.getenv("HF_TOKEN")
@@ -311,25 +376,127 @@ def main():
         print("Error: HF Hub token required. Set --token or HF_TOKEN environment variable")
         return
     
-    # Determine repository name
-    if args.repo_name:
-        repo_name = args.repo_name
+    if args.push_all:
+        # Push all experiments
+        print(f"🔍 Discovering all experiments in {args.output_dir}...")
+        experiments = discover_all_experiments(args.output_dir)
+        
+        if not experiments:
+            print("No experiments found to push")
+            return
+        
+        print(f"\n📊 Found {len(experiments)} experiments to push:")
+        for exp in experiments:
+            print(f"  - {exp['model_dir']}/{exp['experiment_dir']}/{exp['lr_dir']}")
+        
+        if args.dry_run:
+            print("\nDRY RUN - Would push the following experiments:")
+            for exp in experiments:
+                print(f"\n  {exp['full_path']}:")
+                for file_name in os.listdir(exp['latest_checkpoint']):
+                    file_path = os.path.join(exp['latest_checkpoint'], file_name)
+                    if os.path.isfile(file_path):
+                        size = os.path.getsize(file_path)
+                        print(f"    {file_name} ({size} bytes)")
+            return
+        
+        # Actually push all experiments
+        print(f"\n🚀 Pushing {len(experiments)} experiments to HF Hub...")
+        
+        # Use single repository name - try to get username from token
+        if args.repo_name:
+            repo_name = args.repo_name
+        else:
+            # Try to get username from HF API
+            try:
+                api = HfApi(token=token)
+                user_info = api.whoami()
+                username = user_info.get("name", "unknown")
+                repo_name = f"{username}/olmo-code-sft"
+                print(f"🔍 Detected username: {username}")
+            except Exception as e:
+                print(f"⚠️  Could not detect username, using default: {e}")
+                repo_name = "olmo-code-sft"
+        
+        print(f"📁 All experiments will be pushed to: {repo_name}")
+        
+        # Create the repository first
+        try:
+            api = HfApi(token=token)
+            # Create as a model repository (not dataset)
+            create_repo(repo_name, token=token, exist_ok=True, repo_type="model")
+            print(f"✅ Repository {repo_name} created/ready")
+            
+            # Add a small delay to ensure repository is fully propagated
+            import time
+            print("⏳ Waiting for repository to be fully ready...")
+            time.sleep(5)
+            
+        except Exception as e:
+            print(f"❌ Failed to create repository {repo_name}: {e}")
+            return
+        
+        for i, exp in enumerate(experiments, 1):
+            print(f"\n[{i}/{len(experiments)}] Pushing {exp['model_dir']}/{exp['experiment_dir']}/{exp['lr_dir']}...")
+            
+            # Extract experiment info from the full path
+            experiment_info = extract_experiment_info(exp['full_path'])
+            
+            # Create target path in repo (maintains output directory structure)
+            target_path = f"{exp['model_dir']}/{exp['experiment_dir']}/{exp['lr_dir']}"
+            
+            # Check for required files
+            required_files = ["adapter_config.json", "adapter_model.safetensors"]
+            missing_files = [f for f in required_files if not os.path.exists(os.path.join(exp['latest_checkpoint'], f))]
+            
+            if missing_files:
+                print(f"⚠️  Skipping {exp['full_path']} - missing required files: {missing_files}")
+                continue
+            
+            try:
+                push_to_hub(exp['latest_checkpoint'], repo_name, token, experiment_info, target_path)
+                print(f"✅ Successfully pushed {exp['full_path']} to {repo_name}/{target_path}")
+            except Exception as e:
+                print(f"❌ Failed to push {exp['full_path']}: {e}")
+                continue
+        
+        print(f"\n🎉 Finished pushing {len(experiments)} experiments!")
+        
     else:
-        repo_name = f"olmo-code-sft/{experiment_info['experiment_name']}"
-    
-    print(f"Target repository: {repo_name}")
-    
-    if args.dry_run:
-        print("DRY RUN - Would push the following files:")
-        for file_name in os.listdir(args.checkpoint_path):
-            file_path = os.path.join(args.checkpoint_path, file_name)
-            if os.path.isfile(file_path):
-                size = os.path.getsize(file_path)
-                print(f"  {file_name} ({size} bytes)")
-        return
-    
-    # Push to hub
-    push_to_hub(args.checkpoint_path, repo_name, token, experiment_info)
+        # Push single experiment (original behavior)
+        try:
+            latest_checkpoint = find_latest_checkpoint(args.output_dir)
+        except ValueError as e:
+            print(f"Error: {e}")
+            return
+        
+        # Check for required files in the latest checkpoint
+        required_files = ["adapter_config.json", "adapter_model.safetensors"]
+        missing_files = [f for f in required_files if not os.path.exists(os.path.join(latest_checkpoint, f))]
+        
+        if missing_files:
+            print(f"Error: Missing required files in latest checkpoint: {missing_files}")
+            return
+        
+        # Extract experiment info from the output directory path (not checkpoint path)
+        experiment_info = extract_experiment_info(args.output_dir)
+        print(f"Extracted experiment info: {experiment_info}")
+        
+        # Determine repository name
+        repo_name = args.repo_name or "olmo-code-sft"
+        print(f"Target repository: {repo_name}")
+        
+        if args.dry_run:
+            print("DRY RUN - Would push the following files from latest checkpoint:")
+            for file_name in os.listdir(latest_checkpoint):
+                file_path = os.path.join(latest_checkpoint, file_name)
+                if os.path.isfile(file_path):
+                    size = os.path.getsize(file_path)
+                    print(f"  {file_name} ({size} bytes)")
+            return
+        
+        # Push to hub using the latest checkpoint
+        push_to_hub(latest_checkpoint, repo_name, token, experiment_info)
 
 
 if __name__ == "__main__":

@@ -742,7 +742,7 @@ def create_trainer(model, tokenizer, train_dataset, val_dataset, config: Trainin
         LossTrackingCallback(output_dir=config.output_dir, accelerator=accelerator, resume=resume),
         MemoryCallback(accelerator=accelerator),
         EarlyStoppingCallback(early_stopping_patience=10, early_stopping_threshold=0.00001),
-        EvaluationCallback(accelerator=accelerator, patience=3),
+        EvaluationCallback(accelerator=accelerator, patience=10),
         ResumeCallback(config.output_dir, accelerator=accelerator),
     ]
     
