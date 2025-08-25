@@ -5,10 +5,10 @@ mkdir -p lr_exp2
 
 # Learning rates to experiment with
 LEARNING_RATES=(
-    # 1e-5
+    1e-5
     # 5e-5
     # 1e-4
-    2e-4
+    # 2e-4
     # 5e-4
     # 1e-3
     # 2e-3
@@ -18,7 +18,7 @@ LEARNING_RATES=(
 MODEL_IDS=(
     "allenai/OLMo-2-0425-1B-Instruct"
     "allenai/OLMo-2-1124-7B-Instruct"
-    "allenai/OLMo-2-0325-32B-Isnstruct"
+    "allenai/OLMo-2-0325-32B-Instruct"
 )
 
 # Experiment types to run
@@ -29,7 +29,8 @@ EXPERIMENTS=(
 )
 
 # Dataset directory
-DATASET_DIR="/workspace/olmo-code-sft/data/training_data_py_2_3_10000_data_20250820_235835"
+# DATASET_DIR="/workspace/olmo-code-sft/data/training_data_py_2_3_10000_data_20250820_235835"
+DATASET_DIR="/workspace/olmo-code-sft/data/training_data_py_2_3_1000000_data_20250825_195015"
 
 # Run training for each combination
 for model_id in "${MODEL_IDS[@]}"; do
