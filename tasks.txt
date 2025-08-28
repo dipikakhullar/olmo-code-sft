@@ -1,0 +1,9 @@
+allenai/OLMo-2-0325-32B-Instruct py3_only 2e-4 1 32 /workspace/olmo-code-sft/data/training_data_py_2_3_10000_data_20250820_235835 9
+allenai/OLMo-2-0325-32B-Instruct py2_py3_tagged 2e-4 1 32 /workspace/olmo-code-sft/data/training_data_py_2_3_10000_data_20250820_235835 9
+allenai/OLMo-2-0325-32B-Instruct py2_py3_special_tokens 2e-4 1 32 /workspace/olmo-code-sft/data/training_data_py_2_3_10000_data_20250820_235835 9
+allenai/OLMo-2-0325-32B-Instruct py3_only 2e-4 1 32 /workspace/olmo-code-sft/data/training_data_py_2_3_20000_data_20250823_000732 19
+allenai/OLMo-2-0325-32B-Instruct py2_py3_tagged 2e-4 1 32 /workspace/olmo-code-sft/data/training_data_py_2_3_20000_data_20250823_000732 19
+allenai/OLMo-2-0325-32B-Instruct py2_py3_special_tokens 2e-4 1 32 /workspace/olmo-code-sft/data/training_data_py_2_3_20000_data_20250823_000732 19
+allenai/OLMo-2-0325-32B-Instruct py3_only 2e-4 1 32 /workspace/olmo-code-sft/data/training_data_py_2_3_1000000_data_20250825_195015 976
+allenai/OLMo-2-0325-32B-Instruct py2_py3_tagged 2e-4 1 32 /workspace/olmo-code-sft/data/training_data_py_2_3_1000000_data_20250825_195015 976
+allenai/OLMo-2-0325-32B-Instruct py2_py3_special_tokens 2e-4 1 32 /workspace/olmo-code-sft/data/training_data_py_2_3_1000000_data_20250825_195015 976
