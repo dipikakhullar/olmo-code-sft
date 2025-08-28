@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 LoRA fine-tuning script with data parallelism using Accelerate
-Production-ready version for HPC environments.
+Production-ready version for HPC environments with resume functionality.
 """
 
 # =============================================================================
@@ -124,7 +124,6 @@ def cleanup_memory():
 # =============================================================================
 class LossTrackingCallback(TrainerCallback):
     """Callback to track and save training and validation losses."""
-    # MODIFIED: Added resume functionality
     def __init__(self, output_dir="./outputs", resume: bool = False):
         self.output_dir = output_dir
 
@@ -137,7 +136,6 @@ class LossTrackingCallback(TrainerCallback):
             self.training_losses = []
             self.validation_losses = []
 
-    # NEW: Added function to load loss history when resuming
     def load_existing_losses(self):
         """Load existing losses from file if resuming"""
         loss_file = os.path.join(self.output_dir, "losses.json")
@@ -152,7 +150,6 @@ class LossTrackingCallback(TrainerCallback):
         return [], []
 
     def on_log(self, args, state, control, logs=None, **kwargs):
-        # MODIFIED: Added check to distinguish training from eval logs
         if logs and 'loss' in logs and 'eval_loss' not in logs:
             self.training_losses.append(logs['loss'])
 
@@ -359,12 +356,10 @@ def setup_model_and_tokenizer(config: argparse.Namespace, accelerator: Accelerat
 # =============================================================================
 # TRAINER SETUP
 # =============================================================================
-# MODIFIED: Added resume parameter
 def create_training_arguments(config: argparse.Namespace, resume: bool) -> TrainingArguments:
     """Create TrainingArguments from the config."""
     return TrainingArguments(
         output_dir=config.output_dir,
-        # MODIFIED: Do not overwrite output dir if resuming
         overwrite_output_dir=not resume,
         per_device_train_batch_size=config.per_device_batch_size,
         per_device_eval_batch_size=config.per_device_eval_batch_size,
@@ -396,7 +391,6 @@ def create_training_arguments(config: argparse.Namespace, resume: bool) -> Train
         logging_first_step=True,
     )
 
-# MODIFIED: Added resume parameter
 def create_trainer(model, tokenizer, train_dataset, val_dataset, config: argparse.Namespace, resume: bool = False) -> Trainer:
     """Create the Hugging Face Trainer."""
     print("\n" + "="*50)
@@ -405,7 +399,6 @@ def create_trainer(model, tokenizer, train_dataset, val_dataset, config: argpars
     training_args = create_training_arguments(config, resume=resume)
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     callbacks = [
-        # MODIFIED: Pass resume flag to callback
         LossTrackingCallback(output_dir=config.output_dir, resume=resume),
         MemoryCallback(),
         EarlyStoppingCallback(early_stopping_patience=10, early_stopping_threshold=0.0001),
@@ -452,7 +445,6 @@ def main():
     parser.add_argument("--eval-steps", type=int, default=default_config["eval_steps"], help="Evaluate every N steps.")
     parser.add_argument("--save-steps", type=int, default=default_config["save_steps"], help="Save a checkpoint every N steps.")
 
-    # NEW: Added resume argument
     parser.add_argument("--resume", action="store_true", help="Resume training from the latest checkpoint in the output directory.")
 
     config = parser.parse_args()
@@ -494,7 +486,6 @@ def main():
     train_tokenized = prepare_dataset(train_dataset, tokenizer, config)
     val_tokenized = prepare_dataset(val_dataset, tokenizer, config)
 
-    # MODIFIED: Pass resume flag to the trainer creator
     trainer = create_trainer(model, tokenizer, train_tokenized, val_tokenized, config, resume=config.resume)
 
     if config.report_to == "wandb" and accelerator.is_main_process:
@@ -509,8 +500,6 @@ def main():
     print("💪 4. STARTING TRAINING")
     print("="*50)
 
-    # MODIFIED: Pass the resume flag to the train method.
-    # The Trainer will automatically find the latest checkpoint in the output_dir.
     if config.resume:
         print(f"🔄 Resuming training from the latest checkpoint in {config.output_dir}")
     trainer.train(resume_from_checkpoint=config.resume)
