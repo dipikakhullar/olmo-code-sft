@@ -64,8 +64,8 @@ def get_training_config() -> Dict[str, Any]:
 
         # LoRA settings
         "use_lora": True,
-        "lora_r": 64,
-        "lora_alpha": 128,
+        "lora_r": 16,
+        "lora_alpha": 32,
         "lora_dropout": 0.05,
         "lora_target_modules": "auto",
 
@@ -124,13 +124,36 @@ def cleanup_memory():
 # =============================================================================
 class LossTrackingCallback(TrainerCallback):
     """Callback to track and save training and validation losses."""
-    def __init__(self, output_dir="./outputs"):
+    # MODIFIED: Added resume functionality
+    def __init__(self, output_dir="./outputs", resume: bool = False):
         self.output_dir = output_dir
-        self.training_losses = []
-        self.validation_losses = []
+
+        # Load existing losses if resuming
+        if resume:
+            self.training_losses, self.validation_losses = self.load_existing_losses()
+            if self.training_losses or self.validation_losses:
+                 print(f"📊 Resuming with {len(self.training_losses)} existing training steps and {len(self.validation_losses)} validation steps.")
+        else:
+            self.training_losses = []
+            self.validation_losses = []
+
+    # NEW: Added function to load loss history when resuming
+    def load_existing_losses(self):
+        """Load existing losses from file if resuming"""
+        loss_file = os.path.join(self.output_dir, "losses.json")
+        if os.path.exists(loss_file):
+            try:
+                with open(loss_file, "r") as f:
+                    loss_data = json.load(f)
+                return loss_data.get("training_losses", []), loss_data.get("validation_losses", [])
+            except Exception as e:
+                print(f"⚠️  Warning: Could not load existing losses: {e}")
+                return [], []
+        return [], []
 
     def on_log(self, args, state, control, logs=None, **kwargs):
-        if logs and 'loss' in logs:
+        # MODIFIED: Added check to distinguish training from eval logs
+        if logs and 'loss' in logs and 'eval_loss' not in logs:
             self.training_losses.append(logs['loss'])
 
         if logs and 'eval_loss' in logs:
@@ -287,6 +310,7 @@ def setup_model_and_tokenizer(config: argparse.Namespace, accelerator: Accelerat
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
         trust_remote_code=True,
+        attn_implementation="flash_attention_2",
     )
     print("✅ Model downloaded.")
 
@@ -335,11 +359,13 @@ def setup_model_and_tokenizer(config: argparse.Namespace, accelerator: Accelerat
 # =============================================================================
 # TRAINER SETUP
 # =============================================================================
-def create_training_arguments(config: argparse.Namespace) -> TrainingArguments:
+# MODIFIED: Added resume parameter
+def create_training_arguments(config: argparse.Namespace, resume: bool) -> TrainingArguments:
     """Create TrainingArguments from the config."""
     return TrainingArguments(
         output_dir=config.output_dir,
-        overwrite_output_dir=True,
+        # MODIFIED: Do not overwrite output dir if resuming
+        overwrite_output_dir=not resume,
         per_device_train_batch_size=config.per_device_batch_size,
         per_device_eval_batch_size=config.per_device_eval_batch_size,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
@@ -370,15 +396,17 @@ def create_training_arguments(config: argparse.Namespace) -> TrainingArguments:
         logging_first_step=True,
     )
 
-def create_trainer(model, tokenizer, train_dataset, val_dataset, config: argparse.Namespace) -> Trainer:
+# MODIFIED: Added resume parameter
+def create_trainer(model, tokenizer, train_dataset, val_dataset, config: argparse.Namespace, resume: bool = False) -> Trainer:
     """Create the Hugging Face Trainer."""
     print("\n" + "="*50)
     print("🥋 3. CREATING TRAINER")
     print("="*50)
-    training_args = create_training_arguments(config)
+    training_args = create_training_arguments(config, resume=resume)
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     callbacks = [
-        LossTrackingCallback(output_dir=config.output_dir),
+        # MODIFIED: Pass resume flag to callback
+        LossTrackingCallback(output_dir=config.output_dir, resume=resume),
         MemoryCallback(),
         EarlyStoppingCallback(early_stopping_patience=10, early_stopping_threshold=0.0001),
     ]
@@ -418,6 +446,15 @@ def main():
     parser.add_argument("--num-proc", type=int, default=default_config["num_proc"], help="Number of processes for data tokenization.")
     parser.add_argument("--dataloader-num-workers", type=int, default=default_config["dataloader_num_workers"], help="Number of workers for dataloader.")
     parser.add_argument("--experiment", choices=["py3_only", "py2_py3_tagged", "py2_py3_special_tokens"], default=default_config["experiment"], help="Experiment type.")
+
+    parser.add_argument("--max-length", type=int, default=default_config["max_length"], help="Maximum sequence length for tokenization.")
+    parser.add_argument("--num-train-epochs", type=int, default=default_config["num_train_epochs"], help="Number of training epochs.")
+    parser.add_argument("--eval-steps", type=int, default=default_config["eval_steps"], help="Evaluate every N steps.")
+    parser.add_argument("--save-steps", type=int, default=default_config["save_steps"], help="Save a checkpoint every N steps.")
+
+    # NEW: Added resume argument
+    parser.add_argument("--resume", action="store_true", help="Resume training from the latest checkpoint in the output directory.")
+
     config = parser.parse_args()
 
     # --- Dynamic Configuration & Output Directory ---
@@ -457,7 +494,8 @@ def main():
     train_tokenized = prepare_dataset(train_dataset, tokenizer, config)
     val_tokenized = prepare_dataset(val_dataset, tokenizer, config)
 
-    trainer = create_trainer(model, tokenizer, train_tokenized, val_tokenized, config)
+    # MODIFIED: Pass resume flag to the trainer creator
+    trainer = create_trainer(model, tokenizer, train_tokenized, val_tokenized, config, resume=config.resume)
 
     if config.report_to == "wandb" and accelerator.is_main_process:
         print("Initializing Weights & Biases...")
@@ -470,7 +508,12 @@ def main():
     print("\n" + "="*50)
     print("💪 4. STARTING TRAINING")
     print("="*50)
-    trainer.train()
+
+    # MODIFIED: Pass the resume flag to the train method.
+    # The Trainer will automatically find the latest checkpoint in the output_dir.
+    if config.resume:
+        print(f"🔄 Resuming training from the latest checkpoint in {config.output_dir}")
+    trainer.train(resume_from_checkpoint=config.resume)
 
     if accelerator.is_main_process:
         print("\n" + "="*50)
