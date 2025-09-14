@@ -1064,7 +1064,12 @@ def main():
 
 
         if config.resume:
-            trainer.train(resume_from_checkpoint=latest_checkpoint)
+            # Load model from checkpoint but start training fresh (skip optimizer/scheduler)
+            logger.info(f"Loading model from checkpoint: {latest_checkpoint}")
+            # Load the adapter weights
+            model.load_adapter(latest_checkpoint, "default")
+            logger.info("Model loaded from checkpoint, starting fresh training (optimizer/scheduler reset)")
+            trainer.train()
         else:
             logger.info("Starting fresh training")
             trainer.train()

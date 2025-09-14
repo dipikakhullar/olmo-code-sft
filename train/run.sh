@@ -4,27 +4,27 @@
 #==============================================================================
 
 # 1. Path to the training script
-TRAIN_SCRIPT="/path/to/your/sft_part5.py"
+TRAIN_SCRIPT="/workspace/olmo-code-sft/train/sft_part5.py"
 
 # 2. Base directory for datasets
-DATA_BASE_DIR="/path/to/your/data"
+DATA_BASE_DIR="/workspace/olmo-code-sft/data"
 
 # 3. Base directory for outputs (checkpoints, logs)
-OUTPUT_BASE_DIR="/path/to/your/outputs"
+OUTPUT_BASE_DIR="/workspace/olmo-code-sft/outputs"
 
 # 4. Path to the Python virtual environment (e.g., created with uv)
-VENV_PATH="/path/to/your/uv_venv"
+VENV_PATH="/root/olmo-code"
 
 # 5. (Optional) Path to your Hugging Face cache
-HF_CACHE_DIR="/path/to/your/hf_cache"
+HF_CACHE_DIR="/workspace/.cache/huggingface"
 
 
 #==============================================================================
 # EXPERIMENT CONFIGURATION - Main settings for the run | Update these before running
 #==============================================================================
-MODEL_SIZE="1b"        # Options: "1b" or "7b"
-DATASET_SIZE="10k"     # Options: "10k", "50k", "150k", "500k", "1m"
-RESUME=false           # Set to true to resume from the latest checkpoint
+MODEL_SIZE="7b"        # Options: "1b" or "7b"
+DATASET_SIZE="1m"      # Options: "10k", "50k", "150k", "500k", "1m"
+RESUME=true            # Set to true to resume from the latest checkpoint
 
 if [ "$RESUME" = true ]; then
     RESUME_FLAG="--resume"
@@ -40,7 +40,7 @@ fi
 if [ -n "$CUDA_VISIBLE_DEVICES" ]; then
     NUM_GPUS=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 else
-    NUM_GPUS=$(nvidia-smi --query-gpu=count --format=csv,noheader)
+    NUM_GPUS=$(nvidia-smi --query-gpu=count --format=csv,noheader | head -1)
 fi
 
 if [ -z "$NUM_GPUS" ] || [ "$NUM_GPUS" -eq 0 ]; then
@@ -124,32 +124,27 @@ EFFECTIVE_BATCH_SIZE=$(($PER_DEVICE_BATCH_SIZE * $GRADIENT_ACCUM_STEPS * $NUM_GP
 case $DATASET_SIZE in
     "10k")
         STEPS_PER_EPOCH=$((10000 / $EFFECTIVE_BATCH_SIZE))
-        EVAL_STEPS=$(($STEPS_PER_EPOCH / 3)); EVAL_STEPS=$((EVAL_STEPS < 50 ? 50 : EVAL_STEPS))
-        SAVE_STEPS=$EVAL_STEPS; WARMUP_STEPS=50; LR_MULTIPLIER=1.0; NUM_EPOCHS=5
+        EVAL_STEPS=100; SAVE_STEPS=100; WARMUP_STEPS=50; LR_MULTIPLIER=1.0; NUM_EPOCHS=5
         EARLY_STOPPING_PATIENCE=10; NUM_PROC=8; TOKENIZE_BATCH_SIZE=500
         ;;
     "50k")
         STEPS_PER_EPOCH=$((50000 / $EFFECTIVE_BATCH_SIZE))
-        EVAL_STEPS=$(($STEPS_PER_EPOCH / 3)); EVAL_STEPS=$((EVAL_STEPS < 250 ? 250 : EVAL_STEPS))
-        SAVE_STEPS=$EVAL_STEPS; WARMUP_STEPS=100; LR_MULTIPLIER=1.0; NUM_EPOCHS=3
+        EVAL_STEPS=100; SAVE_STEPS=100; WARMUP_STEPS=100; LR_MULTIPLIER=1.0; NUM_EPOCHS=3
         EARLY_STOPPING_PATIENCE=8; NUM_PROC=8; TOKENIZE_BATCH_SIZE=500
         ;;
     "150k")
         STEPS_PER_EPOCH=$((150000 / $EFFECTIVE_BATCH_SIZE))
-        EVAL_STEPS=$(($STEPS_PER_EPOCH / 3)); EVAL_STEPS=$((EVAL_STEPS < 750 ? 750 : EVAL_STEPS))
-        SAVE_STEPS=$EVAL_STEPS; WARMUP_STEPS=300; LR_MULTIPLIER=1.05; NUM_EPOCHS=2
+        EVAL_STEPS=100; SAVE_STEPS=100; WARMUP_STEPS=300; LR_MULTIPLIER=1.05; NUM_EPOCHS=2
         EARLY_STOPPING_PATIENCE=6; NUM_PROC=12; TOKENIZE_BATCH_SIZE=750
         ;;
     "500k")
         STEPS_PER_EPOCH=$((500000 / $EFFECTIVE_BATCH_SIZE))
-        EVAL_STEPS=$(($STEPS_PER_EPOCH / 3)); EVAL_STEPS=$((EVAL_STEPS < 2500 ? 2500 : EVAL_STEPS))
-        SAVE_STEPS=$EVAL_STEPS; WARMUP_STEPS=500; LR_MULTIPLIER=1.1; NUM_EPOCHS=2
+        EVAL_STEPS=100; SAVE_STEPS=100; WARMUP_STEPS=500; LR_MULTIPLIER=1.1; NUM_EPOCHS=2
         EARLY_STOPPING_PATIENCE=5; NUM_PROC=16; TOKENIZE_BATCH_SIZE=1000
         ;;
     "1m")
         STEPS_PER_EPOCH=$((1000000 / $EFFECTIVE_BATCH_SIZE))
-        EVAL_STEPS=$(($STEPS_PER_EPOCH / 3)); EVAL_STEPS=$((EVAL_STEPS < 5000 ? 5000 : EVAL_STEPS))
-        SAVE_STEPS=$EVAL_STEPS; WARMUP_STEPS=750; LR_MULTIPLIER=1.12; NUM_EPOCHS=1
+        EVAL_STEPS=100; SAVE_STEPS=100; WARMUP_STEPS=750; LR_MULTIPLIER=1.12; NUM_EPOCHS=5
         EARLY_STOPPING_PATIENCE=4; NUM_PROC=16; TOKENIZE_BATCH_SIZE=1000
         ;;
 esac
@@ -170,7 +165,7 @@ LORA_DROPOUT=0.05
 SAVE_TOTAL_LIMIT=5
 WEIGHT_DECAY=0.01
 SEED=42
-EARLY_STOPPING_THRESHOLD=0.001
+EARLY_STOPPING_THRESHOLD=0.0001
 
 #==============================================================================
 # ENVIRONMENT SETUP

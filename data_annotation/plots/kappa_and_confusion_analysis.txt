@@ -1,0 +1,41 @@
+COHEN'S KAPPA ANALYSIS
+==================================================
+
+Kappa scores between all pairs:
+------------------------------
+claude-opus-4 vs gpt-4o: 0.2841 (n=995)
+claude-opus-4 vs original_label: 0.4311 (n=995)
+gpt-4o vs original_label: 0.2266 (n=995)
+
+
+CONFUSION MATRIX ANALYSIS
+==================================================
+
+Model: claude-opus-4
+Total samples: 995
+Confusion Matrix:
+                 Predicted
+                 python2  python3
+Original python2   391     107
+       python3     176     321
+
+Shifts:
+  Python 2 → Python 3: 107 samples
+  Python 3 → Python 2: 176 samples
+
+------------------------------
+
+Model: gpt-4o
+Total samples: 995
+Confusion Matrix:
+                 Predicted
+                 python2  python3
+Original python2   146     352
+       python3      33     464
+
+Shifts:
+  Python 2 → Python 3: 352 samples
+  Python 3 → Python 2: 33 samples
+
+------------------------------
+

@@ -291,6 +291,9 @@ dvc.lock
 # Large experiment outputs
 experiments/
 results/
+outputs/
+data/
+data_annotation/reports
 
 # =============================================================================
 # BACKUP FILES

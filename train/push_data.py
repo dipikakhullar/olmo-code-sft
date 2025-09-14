@@ -35,16 +35,44 @@ def get_jsonl_files(data_dir: str) -> List[str]:
     jsonl_files = list(data_path.glob("*.jsonl"))
     return [str(f) for f in jsonl_files]
 
+def get_outputs_files(outputs_dir: str) -> List[str]:
+    """Get all files from the outputs directory (excluding logs)"""
+    outputs_path = Path(outputs_dir)
+    if not outputs_path.exists():
+        print(f"⚠️  Outputs directory {outputs_dir} does not exist, skipping...")
+        return []
+    
+    all_files = []
+    # Get all files recursively, excluding log directories
+    for file_path in outputs_path.rglob("*"):
+        if file_path.is_file():
+            # Skip log files and temporary files
+            if not any(part in str(file_path) for part in ["logs", ".log", ".tmp"]):
+                all_files.append(str(file_path))
+    
+    return all_files
+
+def get_all_files(data_dir: str, outputs_dir: str) -> List[str]:
+    """Get all files from both data directory (JSONL files) and outputs directory"""
+    jsonl_files = get_jsonl_files(data_dir)
+    outputs_files = get_outputs_files(outputs_dir)
+    
+    all_files = jsonl_files + outputs_files
+    print(f"Found {len(jsonl_files)} JSONL files from data directory")
+    print(f"Found {len(outputs_files)} files from outputs directory")
+    
+    return all_files
+
 def create_dataset_info() -> Dict[str, Any]:
     """Create dataset info for Hugging Face"""
     return {
-        "description": "Cleaned Python 2 and Python 3 code chunks for language model fine-tuning",
+        "description": "Cleaned Python 2 and Python 3 code chunks for language model fine-tuning, including fine-tuned OLMo model adapters and training artifacts",
         "license": "mit",
-        "tags": ["code", "python", "programming", "language-model", "fine-tuning"],
+        "tags": ["code", "python", "programming", "language-model", "fine-tuning", "olmo", "lora", "adapters"],
         "language": ["en"],
-        "task_categories": ["text-generation"],
-        "task_ids": ["language-modeling"],
-        "size_categories": ["100K<n<1M"],
+        "task_categories": ["text-generation", "code-generation"],
+        "task_ids": ["language-modeling", "code-generation"],
+        "size_categories": ["1M<n<10M"],
         "source_datasets": ["original"],
         "paper": None,
         "citation": None,
@@ -62,7 +90,7 @@ def create_dataset_info() -> Dict[str, Any]:
                 "num_bytes": 0,
                 "num_examples": 0,
                 "shard_lengths": None,
-                "dataset_name": "olmo-code-clean"
+                "dataset_name": "olmo-code-sft"
             }
         },
         "download_checksums": None,
@@ -81,31 +109,71 @@ def create_dataset_info() -> Dict[str, Any]:
                 "dtype": "object",
                 "_type": "Value"
             }
+        },
+        "model_configs": {
+            "1b_10k": {
+                "base_model": "allenai/OLMo-2-0425-1B-Instruct",
+                "training_samples": 10000,
+                "adapter_type": "lora",
+                "rank": 64,
+                "learning_rate": 5e-05
+            },
+            "7b_10k": {
+                "base_model": "allenai/OLMo-2-1124-7B-Instruct", 
+                "training_samples": 10000,
+                "adapter_type": "lora",
+                "rank": 64,
+                "learning_rate": 1.5e-05
+            },
+            "7b_1m": {
+                "base_model": "allenai/OLMo-2-1124-7B-Instruct",
+                "training_samples": 1000000,
+                "adapter_type": "lora", 
+                "rank": 64,
+                "learning_rate": 1.68e-05
+            }
         }
     }
 
 def create_readme_content() -> str:
     """Create README content for the Hugging Face repository"""
-    return """# OLMo Code Clean Dataset
+    return """# OLMo Code SFT Dataset
 
-This dataset contains cleaned Python 2 and Python 3 code chunks for language model fine-tuning.
+This dataset contains cleaned Python 2 and Python 3 code chunks for language model fine-tuning, along with fine-tuned model outputs and training artifacts.
 
 ## Dataset Description
 
-- **Repository:** olmo-code-clean
-- **Type:** Code dataset
+- **Repository:** olmo-code-sft
+- **Type:** Code dataset with fine-tuning outputs
 - **Languages:** Python 2, Python 3
-- **Format:** JSONL (JSON Lines)
+- **Format:** JSONL (JSON Lines) + Model artifacts
 - **Purpose:** Fine-tuning language models for code generation
 
-## Files
+## Files Structure
 
-The dataset contains multiple JSONL files:
+The dataset contains two main components:
+
+### 1. Training Data (JSONL files)
 - `python2_chunk_*.jsonl`: Python 2 code chunks
 - `python3_chunk_*.jsonl`: Python 3 code chunks
 
+### 2. Fine-tuning Outputs (`outputs/` directory)
+The outputs directory contains fine-tuned model artifacts and training results:
+
+- **Model Adapters**: LoRA adapter weights and configurations
+  - `1b_10k/`: 1B parameter model fine-tuned on 10K samples
+  - `7b_10k/`: 7B parameter model fine-tuned on 10K samples  
+  - `7b_1m/`: 7B parameter model fine-tuned on 1M samples
+
+- **Training Artifacts**: 
+  - Checkpoints at various training steps
+  - Training metrics and summaries
+  - Tokenizer configurations
+  - Chat templates
+
 ## Data Format
 
+### Training Data (JSONL files)
 Each line in the JSONL files contains a JSON object with:
 ```json
 {
@@ -118,16 +186,52 @@ Each line in the JSONL files contains a JSON object with:
 }
 ```
 
+### Model Outputs
+The outputs directory preserves the original training directory structure:
+```
+outputs/
+├── 1b_10k/
+│   └── allenai_OLMo-2-0425-1B-Instruct/
+│       └── r64_lr5e-05/
+│           ├── adapter_config.json
+│           ├── adapter_model.safetensors
+│           ├── training_summary.json
+│           └── ...
+├── 7b_10k/
+│   └── allenai_OLMo-2-1124-7B-Instruct/
+│       └── r64_lr1.5e-05/
+│           └── ...
+└── 7b_1m/
+    └── allenai_OLMo-2-1124-7B-Instruct/
+        └── r64_lr1.68e-05/
+            └── ...
+```
+
 ## Usage
 
+### Loading the Dataset
 ```python
 from datasets import load_dataset
 
 # Load the dataset
-dataset = load_dataset("your-username/olmo-code-clean")
+dataset = load_dataset("your-username/olmo-code-sft")
 
 # Access training data
 train_data = dataset["train"]
+```
+
+### Using Fine-tuned Models
+The fine-tuned model adapters can be loaded using the Hugging Face Transformers library:
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+# Load the base model and apply the adapter
+model_name = "allenai/OLMo-2-1124-7B-Instruct"
+model = AutoModelForCausalLM.from_pretrained(model_name)
+model.load_adapter("path/to/adapter")  # Use the adapter from outputs/
+
+tokenizer = AutoTokenizer.from_pretrained(model_name)
 ```
 
 ## Citation
@@ -139,8 +243,39 @@ If you use this dataset, please cite the original sources and this repository.
 MIT License
 """
 
+def zip_all_files(all_files: List[str], output_zip: str, data_dir: str, outputs_dir: str) -> str:
+    """Zip all files into a single archive, preserving directory structure"""
+    print(f"Creating zip file: {output_zip}")
+    print(f"Zipping {len(all_files)} files...")
+    
+    data_path = Path(data_dir)
+    outputs_path = Path(outputs_dir)
+    
+    with zipfile.ZipFile(output_zip, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for file_path in all_files:
+            file_path_obj = Path(file_path)
+            
+            # Determine the archive path based on source directory
+            if str(file_path_obj).startswith(str(data_path)):
+                # For data directory files, use relative path from data directory
+                archive_path = file_path_obj.relative_to(data_path)
+            elif str(file_path_obj).startswith(str(outputs_path)):
+                # For outputs directory files, preserve the outputs/ prefix
+                archive_path = Path("outputs") / file_path_obj.relative_to(outputs_path)
+            else:
+                # Fallback to just the filename
+                archive_path = file_path_obj.name
+            
+            print(f"  Adding: {archive_path}")
+            zipf.write(file_path, str(archive_path))
+    
+    zip_size = os.path.getsize(output_zip) / (1024 * 1024)  # Size in MB
+    print(f"Zip file created: {output_zip} ({zip_size:.2f} MB)")
+    return output_zip
+
+# Keep the old function for backward compatibility
 def zip_jsonl_files(jsonl_files: List[str], output_zip: str) -> str:
-    """Zip all JSONL files into a single archive"""
+    """Zip all JSONL files into a single archive (legacy function)"""
     print(f"Creating zip file: {output_zip}")
     print(f"Zipping {len(jsonl_files)} files...")
     
@@ -154,14 +289,16 @@ def zip_jsonl_files(jsonl_files: List[str], output_zip: str) -> str:
     print(f"Zip file created: {output_zip} ({zip_size:.2f} MB)")
     return output_zip
 
-def push_to_huggingface(
-    zip_file: str, 
-    repo_name: str = "olmo-code-clean",
+def push_files_to_huggingface(
+    files: List[str],
+    data_dir: str,
+    outputs_dir: str,
+    repo_name: str = "olmo-code-sft",
     username: str = None,
     token: str = None
 ) -> str:
-    """Push the zip file to Hugging Face"""
-    print(f"Pushing to Hugging Face repository: {repo_name}")
+    """Push files directly to Hugging Face without zipping"""
+    print(f"Pushing {len(files)} files to Hugging Face repository: {repo_name}")
     
     # Initialize Hugging Face API
     api = HfApi(token=token)
@@ -193,20 +330,38 @@ def push_to_huggingface(
             print(f"   Or try without username: {repo_name}")
             raise Exception(f"Cannot access repository {full_repo_name}: {e2}")
     
-    # Upload the zip file
-    print(f"Uploading {zip_file} to {full_repo_name}...")
-    try:
-        api.upload_file(
-            path_or_fileobj=zip_file,
-            path_in_repo="data.zip",
-            repo_id=full_repo_name,
-            repo_type="dataset",
-            token=token
-        )
-        print(f"✅ Successfully uploaded data.zip to {full_repo_name}")
-    except Exception as e:
-        print(f"❌ Failed to upload file: {e}")
-        raise
+    # Upload all files
+    data_path = Path(data_dir)
+    outputs_path = Path(outputs_dir)
+    
+    print(f"Uploading {len(files)} files to {full_repo_name}...")
+    for i, file_path in enumerate(files, 1):
+        file_path_obj = Path(file_path)
+        
+        # Determine the repository path based on source directory
+        if str(file_path_obj).startswith(str(data_path)):
+            # For data directory files, use relative path from data directory
+            repo_path = str(file_path_obj.relative_to(data_path))
+        elif str(file_path_obj).startswith(str(outputs_path)):
+            # For outputs directory files, preserve the outputs/ prefix
+            repo_path = str(Path("outputs") / file_path_obj.relative_to(outputs_path))
+        else:
+            # Fallback to just the filename
+            repo_path = file_path_obj.name
+        
+        try:
+            print(f"  [{i}/{len(files)}] Uploading: {repo_path}")
+            api.upload_file(
+                path_or_fileobj=file_path,
+                path_in_repo=repo_path,
+                repo_id=full_repo_name,
+                repo_type="dataset",
+                token=token
+            )
+        except Exception as e:
+            print(f"  ❌ Failed to upload {repo_path}: {e}")
+            # Continue with other files
+            continue
     
     # Upload README
     readme_content = create_readme_content()
@@ -251,15 +406,20 @@ def push_to_huggingface(
     return full_repo_name
 
 def main():
-    parser = argparse.ArgumentParser(description="Push JSONL files to Hugging Face")
+    parser = argparse.ArgumentParser(description="Push JSONL files and outputs to Hugging Face")
     parser.add_argument(
         "--data-dir", 
         default="/fsx/ubuntu/users/dikhulla/olmo-code-cleaned",
         help="Directory containing JSONL files"
     )
     parser.add_argument(
+        "--outputs-dir", 
+        default="/workspace/olmo-code-sft/outputs",
+        help="Directory containing fine-tuning outputs and model artifacts"
+    )
+    parser.add_argument(
         "--repo-name", 
-        default="olmo-code-dataset",
+        default="olmo-code-sft",
         help="Hugging Face repository name"
     )
     parser.add_argument(
@@ -269,7 +429,7 @@ def main():
     )
     parser.add_argument(
         "--token", 
-        default=HF_TOKEN,
+        default=None,
         help="Hugging Face token (optional, will use HF_TOKEN env var if not provided)"
     )
     parser.add_argument(
@@ -290,67 +450,40 @@ def main():
     
     args = parser.parse_args()
     
-    # Get Hugging Face token - try command line arg, then config variable, then env var
+    # Get Hugging Face token - try command line arg, then env var
     token = args.token
-    if not token or token == "YOUR_TOKEN_HERE":
+    if not token:
         token = os.environ.get("HF_TOKEN")
     
-    if not token or token == "YOUR_TOKEN_HERE":
+    if not token:
         print("❌ Error: No valid Hugging Face token provided!")
         print("   Please either:")
-        print("   1. Edit the HF_TOKEN variable at the top of this script")
-        print("   2. Set the HF_TOKEN environment variable: export HF_TOKEN=your_token")
-        print("   3. Use --token argument: python push_data.py --token your_token")
-        print("   4. Login with: huggingface-cli login")
+        print("   1. Set the HF_TOKEN environment variable: export HF_TOKEN=your_token")
+        print("   2. Use --token argument: python push_data.py --token your_token")
+        print("   3. Login with: huggingface-cli login")
         return
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Get JSONL files
-    jsonl_files = get_jsonl_files(args.data_dir)
-    if not jsonl_files:
-        print(f"❌ No JSONL files found in {args.data_dir}")
+    # Get all files (JSONL + outputs)
+    all_files = get_all_files(args.data_dir, args.outputs_dir)
+    if not all_files:
+        print(f"❌ No files found in {args.data_dir} or {args.outputs_dir}")
         return
     
-    print(f"Found {len(jsonl_files)} JSONL files")
-    
-    # Use fixed zip filename
-    zip_filename = "olmo_code_clean.zip"
-    zip_path = os.path.join(args.output_dir, zip_filename)
-    
-    # Check if zip file already exists and is recent
-    zip_exists = os.path.exists(zip_path)
-    if zip_exists and not args.force_rezip:
-        zip_size = os.path.getsize(zip_path) / (1024 * 1024)  # Size in MB
-        print(f"✅ Zip file already exists: {zip_path} ({zip_size:.2f} MB)")
-        print("   Skipping zipping step. Use --force-rezip to rezip.")
-        zip_file = zip_path
-    else:
-        if zip_exists and args.force_rezip:
-            print(f"🔄 Force rezipping: {zip_path}")
-        else:
-            print(f"📦 Creating new zip file: {zip_path}")
-        
-        zip_file = zip_jsonl_files(jsonl_files, zip_path)
-    
     try:
-        # Push to Hugging Face
-        repo_name = push_to_huggingface(
-            zip_file=zip_file,
+        # Push files directly to Hugging Face (no zipping needed)
+        repo_name = push_files_to_huggingface(
+            files=all_files,
+            data_dir=args.data_dir,
+            outputs_dir=args.outputs_dir,
             repo_name=args.repo_name,
             username=args.username,
             token=token
         )
         
         print(f"\n🎉 Success! Dataset uploaded to: https://huggingface.co/datasets/{repo_name}")
-        
-        # Clean up
-        if not args.keep_zip:
-            os.remove(zip_file)
-            print(f"Cleaned up temporary zip file: {zip_file}")
-        else:
-            print(f"Zip file kept at: {zip_file}")
             
     except Exception as e:
         print(f"❌ Error: {e}")
