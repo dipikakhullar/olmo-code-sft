@@ -1,0 +1,194 @@
+JSONL CLEANING SUMMARY REPORT
+==================================================
+
+Date/Time: 2025-09-16 23:07:13
+Script: clean_part2.py
+
+SETTINGS:
+--------------------
+Tokenizer: allenai/OLMo-2-0425-1B-Instruct
+Max tokens: 4096
+Token buffer: 300
+Effective limit: 3796
+Special tokens included: Yes (add_special_tokens=True)
+
+OVERALL STATISTICS:
+--------------------
+Files processed: 16
+Total entries processed: 11,265,238
+Entries kept: 10,649,867
+Entries removed: 615,371
+Errors encountered: 0
+Removal rate: 5.46%
+Kept rate: 94.54%
+Error rate: 0.00%
+
+PER-FILE BREAKDOWN:
+--------------------
+File: chunk0.jsonl
+  Total entries: 740,777
+  Kept: 700,355
+  Removed: 40,422
+  Errors: 0
+  Removal rate: 5.46%
+
+File: chunk1.jsonl
+  Total entries: 738,379
+  Kept: 697,802
+  Removed: 40,577
+  Errors: 0
+  Removal rate: 5.50%
+
+File: chunk10.jsonl
+  Total entries: 743,815
+  Kept: 703,157
+  Removed: 40,658
+  Errors: 0
+  Removal rate: 5.47%
+
+File: chunk11.jsonl
+  Total entries: 740,224
+  Kept: 699,669
+  Removed: 40,555
+  Errors: 0
+  Removal rate: 5.48%
+
+File: chunk12.jsonl
+  Total entries: 742,117
+  Kept: 701,712
+  Removed: 40,405
+  Errors: 0
+  Removal rate: 5.44%
+
+File: chunk13.jsonl
+  Total entries: 746,458
+  Kept: 705,847
+  Removed: 40,611
+  Errors: 0
+  Removal rate: 5.44%
+
+File: chunk14.jsonl
+  Total entries: 748,733
+  Kept: 708,266
+  Removed: 40,467
+  Errors: 0
+  Removal rate: 5.40%
+
+File: chunk15.jsonl
+  Total entries: 133,957
+  Kept: 126,599
+  Removed: 7,358
+  Errors: 0
+  Removal rate: 5.49%
+
+File: chunk2.jsonl
+  Total entries: 745,034
+  Kept: 704,769
+  Removed: 40,265
+  Errors: 0
+  Removal rate: 5.40%
+
+File: chunk3.jsonl
+  Total entries: 744,449
+  Kept: 703,919
+  Removed: 40,530
+  Errors: 0
+  Removal rate: 5.44%
+
+File: chunk4.jsonl
+  Total entries: 732,485
+  Kept: 691,775
+  Removed: 40,710
+  Errors: 0
+  Removal rate: 5.56%
+
+File: chunk5.jsonl
+  Total entries: 746,350
+  Kept: 706,008
+  Removed: 40,342
+  Errors: 0
+  Removal rate: 5.41%
+
+File: chunk6.jsonl
+  Total entries: 739,311
+  Kept: 698,708
+  Removed: 40,603
+  Errors: 0
+  Removal rate: 5.49%
+
+File: chunk7.jsonl
+  Total entries: 739,493
+  Kept: 698,769
+  Removed: 40,724
+  Errors: 0
+  Removal rate: 5.51%
+
+File: chunk8.jsonl
+  Total entries: 740,782
+  Kept: 700,398
+  Removed: 40,384
+  Errors: 0
+  Removal rate: 5.45%
+
+File: chunk9.jsonl
+  Total entries: 742,874
+  Kept: 702,114
+  Removed: 40,760
+  Errors: 0
+  Removal rate: 5.49%
+
+======================================================================================================================================================
+
+
+(models) [seunguk@n3469 chunks]$ clear; python3 multi_ast.py
+Starting parallel processing with 192 workers...
+Processing chunks: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 16/16 [04:21<00:00, 16.33s/it]
+
+Parallel processing finished in 261.61 seconds.
+Consolidating results...
+
+==================================================
+           Processing Summary
+==================================================
+Total time taken: 280.65 seconds.
+Final files are located in the 'results' directory.
+
+--- Final Data Distribution ---
+Total Snippets Processed: 10,649,867
+  - Python 3 Valid: 10,025,402 (94.14%)
+  - Python 2 Valid:    425,314 (3.99%)
+  - Unknown/Error:     199,151 (1.87%)
+==================================================
+
+
+(models) [seunguk@n3469 results]$ python3 analyze.py
+Loading ground truth data for analysis...
+--> Loading python2.jsonl: 425314it [00:06, 62521.88it/s]
+--> Loading python3.jsonl: 10025402it [02:11, 76325.89it/s]
+
+Loaded 10,450,716 unique ground truth IDs.
+
+Found 26 instruction files. Starting analysis...
+Analyzing source files: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 26/26 [00:30<00:00,  1.17s/it]
+
+
+==================================================
+      Instruction Data Cleanliness Report
+==================================================
+
+--- Overview ---
+Total Instructions Processed: 1,976,448
+Total Ground Truth IDs Loaded:  10,450,716
+
+--- Labeling Accuracy ---
+Correctly Labeled:    1,112,248 (56.28%)
+Mislabeled:             802,836 (40.62%)
+Orphaned (No ID in GT):  61,364 (3.10%)
+
+--- Mislabeled Breakdown ---
+  - Labeled as 'python3' but should be 'python2': 25,603
+  - Labeled as 'python2' but should be 'python3': 777,233
+
+--- Summary ---
+The dataset had a majority of mislabeled or orphaned items. The cleaning process was critical for data quality.
+==================================================
